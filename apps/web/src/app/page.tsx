@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useState } from "react";
+import { useRouter } from "next/navigation";
 
 const boardItems = [
   { name: "Soft knit", className: "item-knit", price: "$68" },
@@ -9,6 +10,7 @@ const boardItems = [
 ];
 
 export default function Home() {
+  const router = useRouter();
   const [roomName, setRoomName] = useState("");
   const [roomCode, setRoomCode] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -16,20 +18,31 @@ export default function Home() {
 
   function handleCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setNotice(
-      roomName.trim()
-        ? `Your room “${roomName.trim()}” is ready to set up.`
-        : "Give your room a name to get started.",
-    );
+    const trimmedName = roomName.trim();
+    if (!trimmedName) {
+      setNotice("Give your room a name to get started.");
+      return;
+    }
+
+    const roomId = `${trimmedName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "my-room"}-${Math.random().toString(36).slice(2, 7)}`;
+    window.localStorage.setItem(`closet-room:${roomId}`, JSON.stringify({ name: trimmedName }));
+    router.push(`/room/${roomId}`);
   }
 
   function handleJoin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setNotice(
-      roomCode.trim()
-        ? `Joining room ${roomCode.trim().toUpperCase()} as ${displayName.trim() || "guest"}.`
-        : "Enter a room code to join your friends.",
-    );
+    const trimmedCode = roomCode.trim();
+    if (!trimmedCode) {
+      setNotice("Enter a room code to join your friends.");
+      return;
+    }
+
+    const roomId = trimmedCode.toLowerCase().replace(/[^a-z0-9-]+/g, "-");
+    const existingRoom = window.localStorage.getItem(`closet-room:${roomId}`);
+    if (!existingRoom) {
+      window.localStorage.setItem(`closet-room:${roomId}`, JSON.stringify({ name: `Room ${trimmedCode.toUpperCase()}` }));
+    }
+    router.push(`/room/${roomId}?guest=${encodeURIComponent(displayName.trim() || "Guest")}`);
   }
 
   return (
