@@ -5,6 +5,7 @@ import { ChangeEvent, DragEvent, FormEvent, startTransition, useEffect, useMemo,
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { Logo } from "@/components/Logo";
+import { ReactionIcon, reactionLabels } from "@/components/ReactionIcon";
 import { ApiError, getRoom, normalizeRoomCode, type RoomSummary } from "@/lib/api";
 import { saveGuest, useGuest } from "@/lib/guest";
 type BoardItem = {
@@ -31,6 +32,7 @@ type FeedbackItem = {
   id: string;
   room_id: string;
   product_id: string;
+  user_id?: string;
   reaction: string;
   comment: string;
 };
@@ -125,7 +127,6 @@ export default function RoomPage() {
   const [isParsing, setIsParsing] = useState(false);
   const [isBoardDropActive, setIsBoardDropActive] = useState(false);
   const [allFeedback, setAllFeedback] = useState<FeedbackItem[]>([]);
-  const [feedbackReaction, setFeedbackReaction] = useState("❤️");
   const [feedbackComment, setFeedbackComment] = useState("");
   const [isSavingFeedback, setIsSavingFeedback] = useState(false);
   const activeCloset = closets[closetIndex] || closets[0];
@@ -259,9 +260,13 @@ export default function RoomPage() {
     const channel = supabase
       .channel(`room-feedback:${roomId}`)
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "room_product_reactions", filter: `room_id=eq.${roomId}` }, (payload) => {
-        const row = payload.new as { id: string; room_id: string; product_id: string; emoji: string };
-        const feedback: FeedbackItem = { id: row.id, room_id: row.room_id, product_id: row.product_id, reaction: row.emoji, comment: "" };
+        const row = payload.new as { id: string; room_id: string; product_id: string; user_id?: string; emoji: string };
+        const feedback: FeedbackItem = { id: row.id, room_id: row.room_id, product_id: row.product_id, user_id: row.user_id, reaction: row.emoji, comment: "" };
         setAllFeedback((current) => current.some((item) => item.id === feedback.id) ? current : [...current, feedback]);
+      })
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "room_product_reactions", filter: `room_id=eq.${roomId}` }, (payload) => {
+        const deletedId = String((payload.old as { id: string }).id);
+        setAllFeedback((current) => current.filter((item) => item.id !== deletedId));
       })
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "room_product_notes", filter: `room_id=eq.${roomId}` }, (payload) => {
         const row = payload.new as { id: string; room_id: string; product_id: string; body: string };
@@ -282,13 +287,13 @@ export default function RoomPage() {
 
     async function loadFeedback() {
       const [{ data: reactions, error: reactionsError }, { data: notes, error: notesError }] = await Promise.all([
-        supabase.from("room_product_reactions").select("id, room_id, product_id, emoji, created_at").eq("room_id", roomId).order("created_at", { ascending: true }),
+        supabase.from("room_product_reactions").select("id, room_id, product_id, user_id, emoji, created_at").eq("room_id", roomId).order("created_at", { ascending: true }),
         supabase.from("room_product_notes").select("id, room_id, product_id, body, created_at").eq("room_id", roomId).order("created_at", { ascending: true }),
       ]);
       if (cancelled) return;
       if (reactionsError || notesError) setNotice(`Couldn't load feedback: ${reactionsError?.message || notesError?.message}`);
       else setAllFeedback([
-        ...(reactions || []).map((row) => ({ id: row.id, room_id: row.room_id, product_id: row.product_id, reaction: row.emoji, comment: "" })),
+        ...(reactions || []).map((row) => ({ id: row.id, room_id: row.room_id, product_id: row.product_id, user_id: row.user_id, reaction: row.emoji, comment: "" })),
         ...(notes || []).map((row) => ({ id: row.id, room_id: row.room_id, product_id: row.product_id, reaction: "", comment: row.body })),
       ]);
     }
@@ -666,7 +671,7 @@ async function removeItem(itemId: string) {
   setNotice("Piece removed from the board.");
 }
 
-  async function postFeedback(placementId: string, reaction = feedbackReaction, comment = feedbackComment.trim()) {
+  async function postFeedback(placementId: string, reaction = "", comment = feedbackComment.trim()) {
     if (!room?.id || isSavingFeedback) return;
     if (!comment && !reaction) {
       setNotice("Add a comment or choose a reaction first.");
@@ -722,7 +727,7 @@ async function removeItem(itemId: string) {
     }
 
     const [reactionResult, noteResult] = await Promise.all([
-      reaction ? supabase.from("room_product_reactions").insert({ room_id: room.id, product_id: persistedProductId, user_id: guest?.id || "guest", user_name: guestName, emoji: reaction }).select("id, room_id, product_id, emoji").single() : Promise.resolve({ data: null, error: null }),
+      reaction ? supabase.from("room_product_reactions").insert({ room_id: room.id, product_id: persistedProductId, user_id: guest?.id || "guest", user_name: guestName, emoji: reaction }).select("id, room_id, product_id, user_id, emoji").single() : Promise.resolve({ data: null, error: null }),
       comment ? supabase.from("room_product_notes").insert({ room_id: room.id, product_id: persistedProductId, user_id: guest?.id || "guest", user_name: guestName, body: comment }).select("id, room_id, product_id, body").single() : Promise.resolve({ data: null, error: null }),
     ]);
     const error = reactionResult.error || noteResult.error;
@@ -733,12 +738,30 @@ async function removeItem(itemId: string) {
       return;
     }
     const newFeedback = [
-      reactionResult.data && { id: reactionResult.data.id, room_id: reactionResult.data.room_id, product_id: reactionResult.data.product_id, reaction: reactionResult.data.emoji, comment: "" },
+      reactionResult.data && { id: reactionResult.data.id, room_id: reactionResult.data.room_id, product_id: reactionResult.data.product_id, user_id: reactionResult.data.user_id, reaction: reactionResult.data.emoji, comment: "" },
       noteResult.data && { id: noteResult.data.id, room_id: noteResult.data.room_id, product_id: noteResult.data.product_id, reaction: "", comment: noteResult.data.body },
     ].filter(Boolean) as FeedbackItem[];
     setAllFeedback((current) => [...current, ...newFeedback.filter((item) => !current.some((existing) => existing.id === item.id))]);
     setFeedbackComment("");
     setNotice("Feedback posted!");
+  }
+
+  async function toggleReaction(item: BoardItem, emoji: string) {
+    const myId = guest?.id || "guest";
+    const mine = allFeedback.find((feedback) => feedback.product_id === item.productId && feedback.reaction === emoji && feedback.user_id === myId);
+    if (!mine) {
+      await postFeedback(item.id, emoji, "");
+      return;
+    }
+    if (isSavingFeedback) return;
+    setIsSavingFeedback(true);
+    const { error } = await supabase.from("room_product_reactions").delete().eq("id", mine.id);
+    setIsSavingFeedback(false);
+    if (error) {
+      setNotice(`Couldn't remove reaction: ${error.message}`);
+      return;
+    }
+    setAllFeedback((current) => current.filter((feedback) => feedback.id !== mine.id));
   }
 
   function submitFeedback(event: FormEvent<HTMLFormElement>) {
@@ -813,7 +836,7 @@ if (roomStatus === "not-found") {
                 <div className="placed-meta"><strong>{item.name}</strong><span>{item.price} · {item.category}</span></div>
                 {allFeedback.some((feedback) => feedback.product_id === item.productId && feedback.reaction) && <div className="board-feedback" onPointerDown={(event) => event.stopPropagation()} onPointerUp={(event) => event.stopPropagation()}>
                   <div className="reaction-bubbles" aria-label="Reactions">
-                    {allFeedback.filter((feedback) => feedback.product_id === item.productId && feedback.reaction).slice(-3).map((feedback) => <button className="reaction-bubble" key={feedback.id} type="button" onClick={() => void postFeedback(item.id, feedback.reaction, "")} aria-label={feedback.reaction} title={feedback.comment || undefined}>{feedback.reaction}</button>)}
+                    {allFeedback.filter((feedback) => feedback.product_id === item.productId && feedback.reaction).slice(-3).map((feedback) => <button className="reaction-bubble" key={feedback.id} type="button" onClick={() => void postFeedback(item.id, feedback.reaction, "")} aria-label={reactionLabels[feedback.reaction] || feedback.reaction} title={feedback.comment || undefined}><ReactionIcon reaction={feedback.reaction} size={18} /></button>)}
                   </div>
                   {allFeedback.some((feedback) => feedback.product_id === item.productId && feedback.comment) && <div className="note-hover-card" role="tooltip">
                     <span className="note-hover-label">Notes from the room</span>
@@ -845,8 +868,10 @@ if (roomStatus === "not-found") {
             <div className="feedback-heading"><span>Leave feedback</span><strong>{activeItem.name}</strong></div>
             <div className="reaction-row" aria-label="React to this piece">
               {reactionOptions.map((emoji) => {
-                const count = allFeedback.filter((feedback) => feedback.product_id === activeItem.productId && feedback.reaction === emoji).length;
-                return <button className={`reaction-button ${feedbackReaction === emoji ? "is-reacted" : ""}`} key={emoji} type="button" onClick={() => { setFeedbackReaction(emoji); void postFeedback(activeItem.id, emoji, ""); }} aria-label={`${emoji} reaction${count ? `, ${count}` : ""}`} title={count ? `${count} reaction${count === 1 ? "" : "s"}` : "React"}>{emoji}{count > 0 && <small>{count}</small>}</button>;
+                const matching = allFeedback.filter((feedback) => feedback.product_id === activeItem.productId && feedback.reaction === emoji);
+                const count = matching.length;
+                const isMine = matching.some((feedback) => feedback.user_id === (guest?.id || "guest"));
+                return <button className={`reaction-button ${isMine ? "is-reacted" : ""}`} key={emoji} type="button" aria-pressed={isMine} onClick={() => void toggleReaction(activeItem, emoji)} aria-label={`${reactionLabels[emoji] || emoji} reaction${count ? `, ${count}` : ""}`} title={count ? `${count} reaction${count === 1 ? "" : "s"}` : reactionLabels[emoji] || "React"}><ReactionIcon reaction={emoji} />{count > 0 && <small>{count}</small>}</button>;
               })}
             </div>
             <div className="feedback-notes">
