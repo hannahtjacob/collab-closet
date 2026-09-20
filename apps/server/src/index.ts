@@ -4,10 +4,9 @@ import { roomsRouter } from "./routes/rooms.js";
 
 const PORT = Number(process.env.PORT) || 4000;
 const WEB_ORIGIN = process.env.WEB_ORIGIN;
-const LOCAL_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
 
 const app = express();
-app.use(cors({ origin: WEB_ORIGIN ? WEB_ORIGIN : LOCAL_ORIGIN }));
+app.use(cors({ origin: WEB_ORIGIN || true }));
 app.use(express.json());
 
 app.get("/health", (_req, res) => res.json({ ok: true }));

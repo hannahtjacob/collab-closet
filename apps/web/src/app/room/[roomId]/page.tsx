@@ -1,14 +1,17 @@
 "use client";
-
-import { ChangeEvent, DragEvent, FormEvent, PointerEvent, startTransition, useEffect, useMemo, useRef, useState } from "react";
+import { supabase } from "@/lib/supabase";
+  import type { PointerEvent } from "react";
+import { ChangeEvent, DragEvent, FormEvent, startTransition, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { Logo } from "@/components/Logo";
+import { ReactionIcon, reactionLabels } from "@/components/ReactionIcon";
 import { ApiError, getRoom, normalizeRoomCode, type RoomSummary } from "@/lib/api";
 import { saveGuest, useGuest } from "@/lib/guest";
-
 type BoardItem = {
   id: string;
+  productId: string;
+  addedBy?: string;
   name: string;
   imageUrl: string;
   sourceUrl: string;
@@ -20,15 +23,28 @@ type BoardItem = {
 
 type Closet = {
   id: string;
+  memberId?: string;
   name: string;
   items: BoardItem[];
 };
+
+type FeedbackItem = {
+  id: string;
+  room_id: string;
+  product_id: string;
+  user_id?: string;
+  reaction: string;
+  comment: string;
+};
+
+const reactionOptions = ["❤️", "🔥", "👏", "👎", "✨"];
 
 type ItemForm = typeof emptyForm;
 
 const starterItems: BoardItem[] = [
   {
     id: "starter-knit",
+    productId: "starter-knit-product",
     name: "Coral knit",
     imageUrl: "https://images.unsplash.com/photo-1576566588028-4147f3842f27?auto=format&fit=crop&w=500&q=85",
     sourceUrl: "https://www.example.com/",
@@ -39,6 +55,7 @@ const starterItems: BoardItem[] = [
   },
   {
     id: "starter-pants",
+    productId: "starter-pants-product",
     name: "Wide leg trousers",
     imageUrl: "https://images.unsplash.com/photo-1594633312681-425c7b97ccd1?auto=format&fit=crop&w=500&q=85",
     sourceUrl: "https://www.example.com/",
@@ -49,6 +66,7 @@ const starterItems: BoardItem[] = [
   },
   {
     id: "starter-bag",
+    productId: "starter-bag-product",
     name: "Crescent bag",
     imageUrl: "https://images.unsplash.com/photo-1584917865442-de89df76afd3?auto=format&fit=crop&w=500&q=85",
     sourceUrl: "https://www.example.com/",
@@ -108,8 +126,12 @@ export default function RoomPage() {
   const [copied, setCopied] = useState<"link" | "code" | null>(null);
   const [isParsing, setIsParsing] = useState(false);
   const [isBoardDropActive, setIsBoardDropActive] = useState(false);
+  const [allFeedback, setAllFeedback] = useState<FeedbackItem[]>([]);
+  const [feedbackComment, setFeedbackComment] = useState("");
+  const [isSavingFeedback, setIsSavingFeedback] = useState(false);
   const activeCloset = closets[closetIndex] || closets[0];
   const items = useMemo(() => activeCloset?.items || [], [activeCloset]);
+  const activeItem = items.find((item) => item.id === activeId);
   const closetLabel = activeCloset?.name === "You" ? "Your closet" : `${activeCloset?.name}'s closet`;
 
   useEffect(() => {
@@ -135,6 +157,152 @@ export default function RoomPage() {
       cancelled = true;
     };
   }, [roomCode]);
+
+  useEffect(() => {
+    if (!room?.id || !guest?.id) return;
+    let cancelled = false;
+    const roomId = room.id;
+    const userId = guest.id;
+
+    async function loadMembers() {
+      const { data: members, error } = await supabase
+        .from("room_members")
+        .select("id, room_id, user_id, joined_id")
+        .eq("room_id", roomId)
+        .order("joined_id", { ascending: true });
+      if (cancelled) return;
+      if (error) {
+        setNotice(`Couldn't load room members: ${error.message}`);
+        return;
+      }
+
+      let rows = members || [];
+      let current = rows.find((member) => member.user_id === userId);
+      if (!current) {
+        const { data: joined, error: joinError } = await supabase
+          .from("room_members")
+          .insert({ room_id: roomId, user_id: userId })
+          .select("id, room_id, user_id, joined_id")
+          .single();
+        if (joinError || !joined) {
+          setNotice(`Couldn't join this room: ${joinError?.message || "member record was not created"}`);
+          return;
+        }
+        current = joined;
+        rows = [...rows, joined];
+      }
+
+      setClosets(rows.map((member, index) => ({
+        id: member.user_id,
+        memberId: member.id,
+        name: member.user_id === userId ? guestName : `Member ${index + 1}`,
+        items: [],
+      })));
+      const currentIndex = rows.findIndex((member) => member.id === current?.id);
+      setClosetIndex(Math.max(0, currentIndex));
+    }
+
+    void loadMembers();
+    return () => { cancelled = true; };
+  }, [guest?.id, guestName, room?.id]);
+
+  useEffect(() => {
+    if (!room?.id || !closets.length) return;
+    const roomId = room.id;
+    let cancelled = false;
+
+    async function hydratePlacement(placement: { id: string; product_id: string; added_by: string; x: number; y: number }) {
+      const { data: product, error } = await supabase.from("products").select("id, name, image_url, category, price").eq("id", placement.product_id).single();
+      if (cancelled || error || !product) return;
+      const item: BoardItem = {
+        id: placement.id,
+        productId: product.id,
+        addedBy: placement.added_by,
+        name: product.name,
+        imageUrl: product.image_url || "",
+        sourceUrl: "",
+        category: product.category || "tops",
+        price: product.price !== null && product.price !== undefined ? `$${product.price}` : "Price TBD",
+        x: Number(placement.x) || 0,
+        y: Number(placement.y) || 0,
+      };
+      setClosets((current) => current.map((closet) => closet.id === placement.added_by ? { ...closet, items: [...closet.items.filter((existing) => existing.id !== item.id), item] } : closet));
+    }
+
+    const channel = supabase
+      .channel(`room-products:${roomId}`)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "room_products", filter: `room_id=eq.${roomId}` }, (payload) => void hydratePlacement(payload.new as never))
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "room_products", filter: `room_id=eq.${roomId}` }, (payload) => void hydratePlacement(payload.new as never))
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "room_products", filter: `room_id=eq.${roomId}` }, (payload) => {
+        const deletedId = String((payload.old as { id: string }).id);
+        setClosets((current) => current.map((closet) => ({ ...closet, items: closet.items.filter((item) => item.id !== deletedId) })));
+      })
+      .subscribe();
+
+    async function loadRoomProducts() {
+      const { data: placements, error } = await supabase.from("room_products").select("id, product_id, added_by, x, y").eq("room_id", roomId);
+      if (cancelled) return;
+      if (error) {
+        setNotice(`Couldn't load room products: ${error.message}`);
+        return;
+      }
+      setClosets((current) => current.map((closet) => ({ ...closet, items: [] })));
+      await Promise.all((placements || []).map((placement) => hydratePlacement(placement)));
+    }
+
+    void loadRoomProducts();
+    return () => { cancelled = true; void supabase.removeChannel(channel); };
+  }, [closets.length, room?.id]);
+
+  useEffect(() => {
+    if (!room?.id) return;
+    const roomId = room.id;
+    const channel = supabase
+      .channel(`room-feedback:${roomId}`)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "room_product_reactions", filter: `room_id=eq.${roomId}` }, (payload) => {
+        const row = payload.new as { id: string; room_id: string; product_id: string; user_id?: string; emoji: string };
+        const feedback: FeedbackItem = { id: row.id, room_id: row.room_id, product_id: row.product_id, user_id: row.user_id, reaction: row.emoji, comment: "" };
+        setAllFeedback((current) => current.some((item) => item.id === feedback.id) ? current : [...current, feedback]);
+      })
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "room_product_reactions", filter: `room_id=eq.${roomId}` }, (payload) => {
+        const deletedId = String((payload.old as { id: string }).id);
+        setAllFeedback((current) => current.filter((item) => item.id !== deletedId));
+      })
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "room_product_notes", filter: `room_id=eq.${roomId}` }, (payload) => {
+        const row = payload.new as { id: string; room_id: string; product_id: string; body: string };
+        const feedback: FeedbackItem = { id: row.id, room_id: row.room_id, product_id: row.product_id, reaction: "", comment: row.body };
+        setAllFeedback((current) => current.some((item) => item.id === feedback.id) ? current : [...current, feedback]);
+      })
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [room?.id]);
+
+  useEffect(() => {
+    if (!room?.id) return;
+    const roomId = room.id;
+    let cancelled = false;
+
+    async function loadFeedback() {
+      const [{ data: reactions, error: reactionsError }, { data: notes, error: notesError }] = await Promise.all([
+        supabase.from("room_product_reactions").select("id, room_id, product_id, user_id, emoji, created_at").eq("room_id", roomId).order("created_at", { ascending: true }),
+        supabase.from("room_product_notes").select("id, room_id, product_id, body, created_at").eq("room_id", roomId).order("created_at", { ascending: true }),
+      ]);
+      if (cancelled) return;
+      if (reactionsError || notesError) setNotice(`Couldn't load feedback: ${reactionsError?.message || notesError?.message}`);
+      else setAllFeedback([
+        ...(reactions || []).map((row) => ({ id: row.id, room_id: row.room_id, product_id: row.product_id, user_id: row.user_id, reaction: row.emoji, comment: "" })),
+        ...(notes || []).map((row) => ({ id: row.id, room_id: row.room_id, product_id: row.product_id, reaction: "", comment: row.body })),
+      ]);
+    }
+
+    void loadFeedback();
+    return () => {
+      cancelled = true;
+    };
+  }, [room?.id]);
 
   const total = useMemo(() => {
     return items.reduce((sum, item) => sum + (Number(item.price.replace(/[^0-9.]/g, "")) || 0), 0);
@@ -213,6 +381,8 @@ export default function RoomPage() {
       const y = bounds && clientY ? Math.max(18, Math.min(82, ((clientY - bounds.top) / bounds.height) * 100)) : 45;
       const newItem: BoardItem = {
         id: `${Date.now()}`,
+        productId: "",
+        addedBy: activeCloset?.id,
         name: file.name.replace(/\.[^/.]+$/, "") || "Screenshot find",
         imageUrl,
         sourceUrl: "",
@@ -236,6 +406,8 @@ export default function RoomPage() {
     const y = bounds && clientY ? Math.max(18, Math.min(82, ((clientY - bounds.top) / bounds.height) * 100)) : 45;
     const newItem: BoardItem = {
       id: `${Date.now()}`,
+      productId: "",
+      addedBy: activeCloset?.id,
       name: "Dropped clothing find",
       imageUrl,
       sourceUrl: imageUrl,
@@ -308,7 +480,7 @@ export default function RoomPage() {
     }
   }
 
-  function addItem(event: FormEvent<HTMLFormElement>) {
+  async function addItem(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!form.name.trim()) {
       setNotice("Add a name so everyone knows what the piece is.");
@@ -336,77 +508,276 @@ export default function RoomPage() {
       return;
     }
 
-    const newItem: BoardItem = {
-      id: `${Date.now()}`,
+  const x = 10 + ((items.length * 17) % 70);
+  const y = 12 + ((items.length * 23) % 58);
+
+  if (!room) {
+    setNotice("Room is still loading.");
+    return;
+  }
+
+  // 1. Save product to Supabase products table
+  const { data: product, error: productError } = await supabase
+    .from("products")
+    .insert({
       name: form.name.trim(),
-      imageUrl: form.imageUrl.trim(),
-      sourceUrl: form.sourceUrl.trim(),
+      image_url: form.imageUrl.trim(),
       category: form.category,
-      price: form.price.trim() || "Price TBD",
-      x: 10 + ((items.length * 17) % 70),
-      y: 12 + ((items.length * 23) % 58),
-    };
-    updateActiveItems((current) => [...current, newItem]);
-    setActiveId(newItem.id);
-    setEditingItemId(null);
-    setForm(emptyForm);
-    setPhotoPreview("");
-    setNotice(`${newItem.name} added to the board.`);
+      price: Number(form.price.replace(/[^0-9.]/g, "")) || null,
+    })
+    .select("id, name, image_url, category, price")
+    .single();
+
+  if (productError || !product) {
+    console.error("Products insert error:", productError);
+    setNotice(productError?.message || "Couldn't save the product.");
+    return;
   }
 
-  function startDrag(event: PointerEvent<HTMLElement>, item: BoardItem) {
-    if (!boardRef.current) return;
-    const bounds = boardRef.current.getBoundingClientRect();
-    const centerX = bounds.left + (item.x / 100) * bounds.width;
-    const centerY = bounds.top + (item.y / 100) * bounds.height;
-    dragOffsetRef.current = { x: event.clientX - centerX, y: event.clientY - centerY };
-    dragStartRef.current = { x: event.clientX, y: event.clientY, moved: false };
-    event.currentTarget.setPointerCapture(event.pointerId);
-    setDraggingId(item.id);
+  // 2. Link product to current room in room_products
+  const { data: placement, error: roomProductError } = await supabase
+    .from("room_products")
+    .insert({
+      room_id: room.id,
+      product_id: product.id,
+      added_by: activeCloset.id,
+      x,
+      y,
+    })
+    .select("id")
+    .single();
+
+  if (roomProductError || !placement) {
+    console.error("room_products insert error:", roomProductError);
+    setNotice(roomProductError?.message || "Couldn't save the board placement.");
+    return;
   }
 
-  function moveItem(event: PointerEvent<HTMLDivElement>) {
-    if (!draggingId || !boardRef.current) return;
-    if (!dragStartRef.current.moved && Math.hypot(event.clientX - dragStartRef.current.x, event.clientY - dragStartRef.current.y) < 4) return;
-    dragStartRef.current.moved = true;
-    const bounds = boardRef.current.getBoundingClientRect();
-    const card = event.currentTarget.querySelector<HTMLElement>(".placed-item.is-dragging");
-    const halfW = (card?.offsetWidth ?? 132) / 2;
-    const halfH = (card?.offsetHeight ?? 210) / 2;
-    const centerX = Math.max(halfW, Math.min(bounds.width - halfW, event.clientX - bounds.left - dragOffsetRef.current.x));
-    const centerY = Math.max(halfH, Math.min(bounds.height - halfH, event.clientY - bounds.top - dragOffsetRef.current.y));
-    const x = (centerX / bounds.width) * 100;
-    const y = (centerY / bounds.height) * 100;
-    updateActiveItems((current) => current.map((item) => item.id === draggingId ? { ...item, x, y } : item));
+  // 3. Update local state with saved product data
+  const newItem: BoardItem = {
+    id: placement.id,
+    productId: product.id,
+    addedBy: activeCloset.id,
+    name: product.name,
+    imageUrl: product.image_url || "",
+    sourceUrl: form.sourceUrl.trim(),
+    category: product.category || form.category,
+    price: product.price ? `$${product.price}` : "Price TBD",
+    x,
+    y,
+  };
+
+  updateActiveItems((current) => [...current, newItem]);
+  setActiveId(newItem.id);
+  setEditingItemId(null);
+  setForm(emptyForm);
+  setPhotoPreview("");
+  setNotice(`${newItem.name} added to the board.`);
   }
 
-  function endDrag() {
-    setDraggingId(null);
+
+function startDrag(event: PointerEvent<HTMLElement>, item: BoardItem) {
+  if (!boardRef.current) return;
+  const bounds = boardRef.current.getBoundingClientRect();
+  const centerX = bounds.left + (item.x / 100) * bounds.width;
+  const centerY = bounds.top + (item.y / 100) * bounds.height;
+  dragOffsetRef.current = { x: event.clientX - centerX, y: event.clientY - centerY };
+  dragStartRef.current = { x: event.clientX, y: event.clientY, moved: false };
+  event.currentTarget.setPointerCapture(event.pointerId);
+  setDraggingId(item.id);
+}
+
+function moveItem(event: PointerEvent<HTMLDivElement>) {
+  if (!draggingId || !boardRef.current) return;
+  if (
+    !dragStartRef.current.moved &&
+    Math.hypot(
+      event.clientX - dragStartRef.current.x,
+      event.clientY - dragStartRef.current.y
+    ) < 4
+  )
+    return;
+
+  dragStartRef.current.moved = true;
+  const bounds = boardRef.current.getBoundingClientRect();
+  const card = event.currentTarget.querySelector<HTMLElement>(
+    ".placed-item.is-dragging"
+  );
+  const halfW = (card?.offsetWidth ?? 132) / 2;
+  const halfH = (card?.offsetHeight ?? 210) / 2;
+  const centerX = Math.max(
+    halfW,
+    Math.min(bounds.width - halfW, event.clientX - bounds.left - dragOffsetRef.current.x)
+  );
+  const centerY = Math.max(
+    halfH,
+    Math.min(bounds.height - halfH, event.clientY - bounds.top - dragOffsetRef.current.y)
+  );
+  const x = (centerX / bounds.width) * 100;
+  const y = (centerY / bounds.height) * 100;
+
+  updateActiveItems((current) =>
+    current.map((item) => (item.id === draggingId ? { ...item, x, y } : item))
+  );
+}
+
+function endDrag() {
+  setDraggingId(null);
+}
+
+async function finishPointer(item: BoardItem) {
+  const wasClick = draggingId === item.id && !dragStartRef.current.moved;
+  const wasMoved = dragStartRef.current.moved;
+
+  endDrag();
+
+  if (wasClick) {
+    setActiveId(item.id);
+    editItem(item);
+    return;
   }
 
-  function finishPointer(item: BoardItem) {
-    const wasClick = draggingId === item.id && !dragStartRef.current.moved;
-    endDrag();
-    if (wasClick) {
-      setActiveId(item.id);
-      editItem(item);
+  // If dragged, save final position to room_products in Supabase
+  if (wasMoved && room?.id) {
+    const { error } = await supabase
+      .from("room_products")
+      .update({ x: item.x, y: item.y })
+      .eq("room_id", room.id)
+      .eq("id", item.id);
+
+    if (error) {
+      console.error("Failed to update item coordinates:", error.message);
+    }
+  }
+}
+
+async function removeItem(itemId: string) {
+  updateActiveItems((current) => current.filter((item) => item.id !== itemId));
+  setActiveId(null);
+  setEditingItemId(null);
+
+  if (room?.id) {
+    const { error } = await supabase
+      .from("room_products")
+      .delete()
+      .eq("room_id", room.id)
+      .eq("id", itemId);
+
+    if (error) {
+      console.error("Failed to delete item from room:", error.message);
     }
   }
 
-  function removeItem(itemId: string) {
-    updateActiveItems((current) => current.filter((item) => item.id !== itemId));
-    setActiveId(null);
-    setEditingItemId(null);
-    setNotice("Piece removed from the board.");
+  setNotice("Piece removed from the board.");
+}
+
+  async function postFeedback(placementId: string, reaction = "", comment = feedbackComment.trim()) {
+    if (!room?.id || isSavingFeedback) return;
+    if (!comment && !reaction) {
+      setNotice("Add a comment or choose a reaction first.");
+      return;
+    }
+
+    setIsSavingFeedback(true);
+    let persistedPlacementId = placementId;
+    let persistedProductId = items.find((item) => item.id === placementId)?.productId || placementId;
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(placementId);
+
+    if (!isUuid) {
+      const localItem = items.find((item) => item.id === placementId);
+      if (!localItem) {
+        setIsSavingFeedback(false);
+        setNotice("Select a saved board item before posting feedback.");
+        return;
+      }
+
+      const { data: product, error: productError } = await supabase
+        .from("products")
+        .insert({
+          name: localItem.name,
+          image_url: localItem.imageUrl,
+          category: localItem.category,
+          price: Number(localItem.price.replace(/[^0-9.]/g, "")) || null,
+        })
+        .select("id")
+        .single();
+
+      if (productError || !product) {
+        setIsSavingFeedback(false);
+        setNotice(`Couldn't save the board item: ${productError?.message || "Unknown error"}`);
+        return;
+      }
+
+      const { data: placement, error: placementError } = await supabase
+        .from("room_products")
+        .insert({ room_id: room.id, product_id: product.id, added_by: activeCloset.id, x: localItem.x, y: localItem.y })
+        .select("id")
+        .single();
+
+      if (placementError || !placement) {
+        setIsSavingFeedback(false);
+        setNotice(`Couldn't save the board placement: ${placementError.message}`);
+        return;
+      }
+
+      persistedProductId = product.id;
+      persistedPlacementId = placement.id;
+      updateActiveItems((current) => current.map((item) => item.id === placementId ? { ...item, id: persistedPlacementId, productId: persistedProductId } : item));
+      setActiveId(persistedPlacementId);
+    }
+
+    const [reactionResult, noteResult] = await Promise.all([
+      reaction ? supabase.from("room_product_reactions").insert({ room_id: room.id, product_id: persistedProductId, user_id: guest?.id || "guest", user_name: guestName, emoji: reaction }).select("id, room_id, product_id, user_id, emoji").single() : Promise.resolve({ data: null, error: null }),
+      comment ? supabase.from("room_product_notes").insert({ room_id: room.id, product_id: persistedProductId, user_id: guest?.id || "guest", user_name: guestName, body: comment }).select("id, room_id, product_id, body").single() : Promise.resolve({ data: null, error: null }),
+    ]);
+    const error = reactionResult.error || noteResult.error;
+    setIsSavingFeedback(false);
+    if (error) {
+      console.error("Error posting feedback:", error?.message);
+      setNotice(`Couldn't save feedback: ${error?.message || "Unknown error"}`);
+      return;
+    }
+    const newFeedback = [
+      reactionResult.data && { id: reactionResult.data.id, room_id: reactionResult.data.room_id, product_id: reactionResult.data.product_id, user_id: reactionResult.data.user_id, reaction: reactionResult.data.emoji, comment: "" },
+      noteResult.data && { id: noteResult.data.id, room_id: noteResult.data.room_id, product_id: noteResult.data.product_id, reaction: "", comment: noteResult.data.body },
+    ].filter(Boolean) as FeedbackItem[];
+    setAllFeedback((current) => [...current, ...newFeedback.filter((item) => !current.some((existing) => existing.id === item.id))]);
+    setFeedbackComment("");
+    setNotice("Feedback posted!");
   }
 
-  async function copyToClipboard(kind: "link" | "code") {
-    await navigator.clipboard.writeText(kind === "link" ? `${window.location.origin}/room/${roomCode}` : roomCode);
-    setCopied(kind);
-    setTimeout(() => setCopied(null), 1800);
+  async function toggleReaction(item: BoardItem, emoji: string) {
+    const myId = guest?.id || "guest";
+    const mine = allFeedback.find((feedback) => feedback.product_id === item.productId && feedback.reaction === emoji && feedback.user_id === myId);
+    if (!mine) {
+      await postFeedback(item.id, emoji, "");
+      return;
+    }
+    if (isSavingFeedback) return;
+    setIsSavingFeedback(true);
+    const { error } = await supabase.from("room_product_reactions").delete().eq("id", mine.id);
+    setIsSavingFeedback(false);
+    if (error) {
+      setNotice(`Couldn't remove reaction: ${error.message}`);
+      return;
+    }
+    setAllFeedback((current) => current.filter((feedback) => feedback.id !== mine.id));
   }
 
-  if (roomStatus === "not-found") {
+  function submitFeedback(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (activeId) void postFeedback(activeId);
+  }
+
+async function copyToClipboard(kind: "link" | "code") {
+  await navigator.clipboard.writeText(
+    kind === "link" ? `${window.location.origin}/room/${roomCode}` : roomCode
+  );
+  setCopied(kind);
+  setTimeout(() => setCopied(null), 1800);
+}
+
+if (roomStatus === "not-found") {
     return (
       <main className="room-shell">
         <header className="room-header">
@@ -431,7 +802,7 @@ export default function RoomPage() {
           <div><span className="room-kicker">Shared moodboard{roomStatus === "offline" && " · offline"}</span><h1>{roomName}</h1></div>
         </div>
         <div className="room-actions-bar">
-          <div className="room-people"><i className="avatar avatar-one">{guestName.slice(0, 1).toUpperCase()}</i><i className="avatar avatar-two">M</i><i className="avatar avatar-three">S</i><span>3 online</span></div>
+          <div className="room-people"><i className="avatar avatar-one">{guestName.slice(0, 1).toUpperCase()}</i><span>1 here</span></div>
           <button className="room-code" onClick={() => copyToClipboard("code")} title="Copy room code" aria-label="Copy room code"><span className="room-kicker">Code</span><strong>{copied === "code" ? "Copied" : room?.code || roomCode}</strong></button>
           <button className="outline-button" onClick={() => copyToClipboard("link")}>{copied === "link" ? "Copied" : "Share room"} <span aria-hidden="true">↗</span></button>
         </div>
@@ -463,6 +834,15 @@ export default function RoomPage() {
                 </div>
                 {activeId === item.id && <button className="remove-item" onPointerDown={(event) => event.stopPropagation()} onClick={() => removeItem(item.id)} aria-label={`Remove ${item.name}`}>×</button>}
                 <div className="placed-meta"><strong>{item.name}</strong><span>{item.price} · {item.category}</span></div>
+                {allFeedback.some((feedback) => feedback.product_id === item.productId && feedback.reaction) && <div className="board-feedback" onPointerDown={(event) => event.stopPropagation()} onPointerUp={(event) => event.stopPropagation()}>
+                  <div className="reaction-bubbles" aria-label="Reactions">
+                    {allFeedback.filter((feedback) => feedback.product_id === item.productId && feedback.reaction).slice(-3).map((feedback) => <button className="reaction-bubble" key={feedback.id} type="button" onClick={() => void postFeedback(item.id, feedback.reaction, "")} aria-label={reactionLabels[feedback.reaction] || feedback.reaction} title={feedback.comment || undefined}><ReactionIcon reaction={feedback.reaction} size={18} /></button>)}
+                  </div>
+                  {allFeedback.some((feedback) => feedback.product_id === item.productId && feedback.comment) && <div className="note-hover-card" role="tooltip">
+                    <span className="note-hover-label">Notes from the room</span>
+                    {allFeedback.filter((feedback) => feedback.product_id === item.productId && feedback.comment).map((feedback) => <p key={feedback.id}>{feedback.comment}</p>)}
+                  </div>}
+                </div>}
               </article>
             ))}
           </div>
@@ -484,6 +864,24 @@ export default function RoomPage() {
         </div>
 
         <aside className="room-sidebar">
+          {activeItem && <section className="feedback-panel" aria-label={`Feedback for ${activeItem.name}`}>
+            <div className="feedback-heading"><span>Leave feedback</span><strong>{activeItem.name}</strong></div>
+            <div className="reaction-row" aria-label="React to this piece">
+              {reactionOptions.map((emoji) => {
+                const matching = allFeedback.filter((feedback) => feedback.product_id === activeItem.productId && feedback.reaction === emoji);
+                const count = matching.length;
+                const isMine = matching.some((feedback) => feedback.user_id === (guest?.id || "guest"));
+                return <button className={`reaction-button ${isMine ? "is-reacted" : ""}`} key={emoji} type="button" aria-pressed={isMine} onClick={() => void toggleReaction(activeItem, emoji)} aria-label={`${reactionLabels[emoji] || emoji} reaction${count ? `, ${count}` : ""}`} title={count ? `${count} reaction${count === 1 ? "" : "s"}` : reactionLabels[emoji] || "React"}><ReactionIcon reaction={emoji} />{count > 0 && <small>{count}</small>}</button>;
+              })}
+            </div>
+            <div className="feedback-notes">
+              {allFeedback.filter((feedback) => feedback.product_id === activeItem.productId && feedback.comment).map((feedback) => <article className="feedback-note" key={feedback.id}><p>{feedback.comment}</p></article>)}
+            </div>
+            <form className="note-form" onSubmit={submitFeedback}>
+              <input value={feedbackComment} onChange={(event) => setFeedbackComment(event.target.value)} maxLength={280} placeholder="Say what you think..." aria-label="Write feedback" />
+              <button type="submit" disabled={!feedbackComment.trim() || isSavingFeedback} aria-label="Post note">Post</button>
+            </form>
+          </section>}
           <div className="sidebar-intro"><p className="eyebrow">{closetLabel}</p><h2>Bring in<br /><em>your finds.</em></h2><p>Paste a product link and add it to the closet currently on display.</p></div>
           <form className="add-item-form" onSubmit={addItem}>
             <div className="form-title-row"><label htmlFor="item-name">{editingItemId ? "Edit piece" : "Add a piece"}</label>{editingItemId && <button type="button" className="cancel-edit" onClick={() => { setEditingItemId(null); setForm(emptyForm); setPhotoPreview(""); }}>Cancel</button>}</div>
