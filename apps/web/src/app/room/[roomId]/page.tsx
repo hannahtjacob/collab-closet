@@ -3,6 +3,8 @@
 import { FormEvent, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
+import { ApiError, getRoom, normalizeRoomCode, type RoomSummary } from "@/lib/api";
+import { saveGuest, useGuest } from "@/lib/guest";
 
 type BoardItem = {
   id: string;
@@ -66,14 +68,42 @@ export default function RoomPage() {
   const { roomId } = useParams<{ roomId: string }>();
   const searchParams = useSearchParams();
   const boardRef = useRef<HTMLDivElement>(null);
-  const [roomName] = useState(() => getStoredRoom(roomId).name);
+  const roomCode = normalizeRoomCode(roomId);
+  const guest = useGuest();
+  const guestName = guest?.name || "You";
+  const [room, setRoom] = useState<RoomSummary | null>(null);
+  const [roomStatus, setRoomStatus] = useState<"loading" | "ready" | "not-found" | "offline">(() => (roomCode ? "loading" : "not-found"));
+  const [roomName, setRoomName] = useState(() => getStoredRoom(roomId).name);
   const [items, setItems] = useState<BoardItem[]>(() => getStoredRoom(roomId).items);
   const [form, setForm] = useState(emptyForm);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
-  const [copied, setCopied] = useState(false);
-  const guestName = searchParams.get("guest") || "You";
+  const [copied, setCopied] = useState<"link" | "code" | null>(null);
+
+  useEffect(() => {
+    const fromQuery = searchParams.get("guest");
+    if (fromQuery) saveGuest(fromQuery);
+  }, [searchParams]);
+
+  useEffect(() => {
+    if (!roomCode) return;
+    let cancelled = false;
+    getRoom(roomCode)
+      .then((found) => {
+        if (cancelled) return;
+        setRoom(found);
+        setRoomName(found.name);
+        setRoomStatus("ready");
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setRoomStatus(error instanceof ApiError && error.status === 404 ? "not-found" : "offline");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [roomCode]);
 
   const total = useMemo(() => {
     return items.reduce((sum, item) => sum + (Number(item.price.replace(/[^0-9.]/g, "")) || 0), 0);
@@ -131,10 +161,26 @@ export default function RoomPage() {
     setNotice("Piece removed from the board.");
   }
 
-  async function copyRoomLink() {
-    await navigator.clipboard.writeText(window.location.href);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1800);
+  async function copyToClipboard(kind: "link" | "code") {
+    await navigator.clipboard.writeText(kind === "link" ? `${window.location.origin}/room/${roomCode}` : roomCode);
+    setCopied(kind);
+    setTimeout(() => setCopied(null), 1800);
+  }
+
+  if (roomStatus === "not-found") {
+    return (
+      <main className="room-shell">
+        <header className="room-header">
+          <Link className="wordmark" href="/" aria-label="Back to closet home"><span className="wordmark-mark">C</span>closet</Link>
+        </header>
+        <section className="room-empty">
+          <p className="eyebrow">Room not found</p>
+          <h1>No room with<br /><em>code {roomCode || "—"}.</em></h1>
+          <p>Double-check the code with whoever shared it, or start a fresh room.</p>
+          <Link className="outline-button" href="/">Back to closet <span aria-hidden="true">↗</span></Link>
+        </section>
+      </main>
+    );
   }
 
   return (
@@ -143,11 +189,12 @@ export default function RoomPage() {
         <Link className="wordmark" href="/" aria-label="Back to closet home"><span className="wordmark-mark">C</span>closet</Link>
         <div className="room-heading">
           <span className="status-dot" />
-          <div><span className="room-kicker">Shared moodboard</span><h1>{roomName}</h1></div>
+          <div><span className="room-kicker">Shared moodboard{roomStatus === "offline" && " · offline"}</span><h1>{roomName}</h1></div>
         </div>
         <div className="room-actions-bar">
           <div className="room-people"><i className="avatar avatar-one">{guestName.slice(0, 1).toUpperCase()}</i><i className="avatar avatar-two">M</i><i className="avatar avatar-three">S</i><span>3 online</span></div>
-          <button className="outline-button" onClick={copyRoomLink}>{copied ? "Copied" : "Share room"} <span aria-hidden="true">↗</span></button>
+          <button className="room-code" onClick={() => copyToClipboard("code")} title="Copy room code" aria-label="Copy room code"><span className="room-kicker">Code</span><strong>{copied === "code" ? "Copied" : room?.code || roomCode}</strong></button>
+          <button className="outline-button" onClick={() => copyToClipboard("link")}>{copied === "link" ? "Copied" : "Share room"} <span aria-hidden="true">↗</span></button>
         </div>
       </header>
 
