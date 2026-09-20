@@ -24,6 +24,16 @@ type Closet = {
   items: BoardItem[];
 };
 
+type FeedbackItem = {
+  id: string;
+  room_id: string;
+  product_id: string;
+  reaction: string;
+  comment: string;
+};
+
+const reactionOptions = ["❤️", "🔥", "👏", "👎", "✨"];
+
 type ItemForm = typeof emptyForm;
 
 const starterItems: BoardItem[] = [
@@ -108,8 +118,13 @@ export default function RoomPage() {
   const [copied, setCopied] = useState<"link" | "code" | null>(null);
   const [isParsing, setIsParsing] = useState(false);
   const [isBoardDropActive, setIsBoardDropActive] = useState(false);
+  const [allFeedback, setAllFeedback] = useState<FeedbackItem[]>([]);
+  const [feedbackReaction, setFeedbackReaction] = useState("❤️");
+  const [feedbackComment, setFeedbackComment] = useState("");
+  const [isSavingFeedback, setIsSavingFeedback] = useState(false);
   const activeCloset = closets[closetIndex] || closets[0];
   const items = useMemo(() => activeCloset?.items || [], [activeCloset]);
+  const activeItem = items.find((item) => item.id === activeId);
   const closetLabel = activeCloset?.name === "You" ? "Your closet" : `${activeCloset?.name}'s closet`;
 
   useEffect(() => {
@@ -190,6 +205,43 @@ export default function RoomPage() {
     }
 
     void loadRoomProducts();
+    return () => {
+      cancelled = true;
+    };
+  }, [room?.id]);
+
+  useEffect(() => {
+    if (!room?.id) return;
+    const roomId = room.id;
+    const channel = supabase
+      .channel(`room-feedback:${roomId}`)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "item_feedback", filter: `room_id=eq.${roomId}` }, (payload) => {
+        const feedback = payload.new as FeedbackItem;
+        setAllFeedback((current) => current.some((item) => item.id === feedback.id) ? current : [...current, feedback]);
+      })
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [room?.id]);
+
+  useEffect(() => {
+    if (!room?.id) return;
+    const roomId = room.id;
+    let cancelled = false;
+
+    async function loadFeedback() {
+      const { data, error } = await supabase
+        .from("item_feedback")
+        .select("id, room_id, product_id, reaction, comment")
+        .eq("room_id", roomId);
+      if (cancelled) return;
+      if (error) setNotice(`Couldn't load feedback: ${error.message}`);
+      else setAllFeedback((data || []) as FeedbackItem[]);
+    }
+
+    void loadFeedback();
     return () => {
       cancelled = true;
     };
@@ -553,6 +605,78 @@ async function removeItem(itemId: string) {
   setNotice("Piece removed from the board.");
 }
 
+  async function postFeedback(productId: string, reaction = feedbackReaction, comment = feedbackComment.trim()) {
+    if (!room?.id || isSavingFeedback) return;
+    if (!comment && !reaction) {
+      setNotice("Add a comment or choose a reaction first.");
+      return;
+    }
+
+    setIsSavingFeedback(true);
+    let persistedProductId = productId;
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(productId);
+
+    if (!isUuid) {
+      const localItem = items.find((item) => item.id === productId);
+      if (!localItem) {
+        setIsSavingFeedback(false);
+        setNotice("Select a saved board item before posting feedback.");
+        return;
+      }
+
+      const { data: product, error: productError } = await supabase
+        .from("products")
+        .insert({
+          name: localItem.name,
+          image_url: localItem.imageUrl,
+          category: localItem.category,
+          price: Number(localItem.price.replace(/[^0-9.]/g, "")) || null,
+        })
+        .select("id")
+        .single();
+
+      if (productError || !product) {
+        setIsSavingFeedback(false);
+        setNotice(`Couldn't save the board item: ${productError?.message || "Unknown error"}`);
+        return;
+      }
+
+      const { error: placementError } = await supabase
+        .from("room_products")
+        .insert({ room_id: room.id, product_id: product.id, x: localItem.x, y: localItem.y });
+
+      if (placementError) {
+        setIsSavingFeedback(false);
+        setNotice(`Couldn't save the board placement: ${placementError.message}`);
+        return;
+      }
+
+      persistedProductId = product.id;
+      updateActiveItems((current) => current.map((item) => item.id === productId ? { ...item, id: persistedProductId } : item));
+      setActiveId(persistedProductId);
+    }
+
+    const { data, error } = await supabase
+      .from("item_feedback")
+      .insert({ room_id: room.id, product_id: persistedProductId, reaction, comment })
+      .select("id, room_id, product_id, reaction, comment")
+      .single();
+    setIsSavingFeedback(false);
+    if (error || !data) {
+      console.error("Error posting feedback:", error?.message);
+      setNotice(`Couldn't save feedback: ${error?.message || "Unknown error"}`);
+      return;
+    }
+    setAllFeedback((current) => current.some((item) => item.id === data.id) ? current : [...current, data as FeedbackItem]);
+    setFeedbackComment("");
+    setNotice("Feedback posted!");
+  }
+
+  function submitFeedback(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (activeId) void postFeedback(activeId);
+  }
+
 async function copyToClipboard(kind: "link" | "code") {
   await navigator.clipboard.writeText(
     kind === "link" ? `${window.location.origin}/room/${roomCode}` : roomCode
@@ -618,6 +742,19 @@ if (roomStatus === "not-found") {
                 </div>
                 {activeId === item.id && <button className="remove-item" onPointerDown={(event) => event.stopPropagation()} onClick={() => removeItem(item.id)} aria-label={`Remove ${item.name}`}>×</button>}
                 <div className="placed-meta"><strong>{item.name}</strong><span>{item.price} · {item.category}</span></div>
+                {allFeedback.some((feedback) => feedback.product_id === item.id) && <div className="board-feedback" onPointerDown={(event) => event.stopPropagation()} onPointerUp={(event) => event.stopPropagation()}>
+                  <div className="reaction-bubbles" aria-label="Reactions">
+                    {reactionOptions.map((emoji) => {
+                      const itemReactions = allFeedback.filter((feedback) => feedback.product_id === item.id && feedback.reaction === emoji);
+                      if (!itemReactions.length) return null;
+                      return <button className="reaction-bubble" key={emoji} type="button" onClick={() => void postFeedback(item.id, emoji, "")} aria-label={`${emoji}, ${itemReactions.length} reaction${itemReactions.length === 1 ? "" : "s"}`}>{emoji}<small>{itemReactions.length}</small></button>;
+                    })}
+                  </div>
+                  {allFeedback.some((feedback) => feedback.product_id === item.id && feedback.comment) && <div className="note-hover-card" role="tooltip">
+                    <span className="note-hover-label">Notes from the room</span>
+                    {allFeedback.filter((feedback) => feedback.product_id === item.id && feedback.comment).map((feedback) => <p key={feedback.id}>{feedback.comment}</p>)}
+                  </div>}
+                </div>}
               </article>
             ))}
           </div>
@@ -639,6 +776,22 @@ if (roomStatus === "not-found") {
         </div>
 
         <aside className="room-sidebar">
+          {activeItem && <section className="feedback-panel" aria-label={`Feedback for ${activeItem.name}`}>
+            <div className="feedback-heading"><span>Leave feedback</span><strong>{activeItem.name}</strong></div>
+            <div className="reaction-row" aria-label="React to this piece">
+              {reactionOptions.map((emoji) => {
+                const count = allFeedback.filter((feedback) => feedback.product_id === activeItem.id && feedback.reaction === emoji).length;
+                return <button className={`reaction-button ${feedbackReaction === emoji ? "is-reacted" : ""}`} key={emoji} type="button" onClick={() => { setFeedbackReaction(emoji); void postFeedback(activeItem.id, emoji, ""); }} aria-label={`${emoji} reaction${count ? `, ${count}` : ""}`} title={count ? `${count} reaction${count === 1 ? "" : "s"}` : "React"}>{emoji}{count > 0 && <small>{count}</small>}</button>;
+              })}
+            </div>
+            <div className="feedback-notes">
+              {allFeedback.filter((feedback) => feedback.product_id === activeItem.id && feedback.comment).map((feedback) => <article className="feedback-note" key={feedback.id}><p>{feedback.comment}</p></article>)}
+            </div>
+            <form className="note-form" onSubmit={submitFeedback}>
+              <input value={feedbackComment} onChange={(event) => setFeedbackComment(event.target.value)} maxLength={280} placeholder="Say what you think..." aria-label="Write feedback" />
+              <button type="submit" disabled={!feedbackComment.trim() || isSavingFeedback} aria-label="Post note">Post</button>
+            </form>
+          </section>}
           <div className="sidebar-intro"><p className="eyebrow">{closetLabel}</p><h2>Bring in<br /><em>your finds.</em></h2><p>Paste a product link and add it to the closet currently on display.</p></div>
           <form className="add-item-form" onSubmit={addItem}>
             <div className="form-title-row"><label htmlFor="item-name">{editingItemId ? "Edit piece" : "Add a piece"}</label>{editingItemId && <button type="button" className="cancel-edit" onClick={() => { setEditingItemId(null); setForm(emptyForm); setPhotoPreview(""); }}>Cancel</button>}</div>

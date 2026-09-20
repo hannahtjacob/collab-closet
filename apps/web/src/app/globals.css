@@ -172,3 +172,27 @@ button { border: 0; cursor: pointer; }
 
 @media (max-width: 1000px) { .room-header { grid-template-columns: auto 1fr; }.room-actions-bar { grid-column: 1 / -1; justify-content: space-between; }.room-layout { grid-template-columns: 1fr; }.room-sidebar { border-left: 0; border-top: 1px solid var(--line); padding: 30px 0 0; }.add-item-form { max-width: 620px; }.moodboard { min-height: 480px; } }
 @media (max-width: 560px) { .room-shell { padding: 18px 20px 28px; }.room-header { gap: 19px; }.room-heading { grid-column: 1 / -1; grid-row: 2; }.room-actions-bar { align-items: flex-start; flex-wrap: wrap; gap: 14px; }.room-people { order: 2; }.board-toolbar { align-items: flex-start; flex-direction: column; gap: 8px; }.closet-tabs { padding-right: 6px; width: 54px; }.closet-tab { min-height: 84px; }.moodboard { min-height: 420px; }.placed-item { width: 92px; }.placed-image-wrap { height: 118px; }.moodboard-note { font-size: 2.8rem; }.placed-meta strong, .placed-meta span { font-size: 8px; }.room-sidebar { padding-top: 25px; }.sidebar-intro h2 { font-size: 38px; }.preview-footer { font-size: 8px; } }
+
+.feedback-panel { border: 1px solid var(--line); margin-bottom: 26px; padding: 14px; }
+.feedback-heading { display: flex; flex-direction: column; gap: 4px; font-family: var(--font-geist-sans), sans-serif; }
+.feedback-heading span { color: rgba(32,32,29,.52); font-size: 9px; letter-spacing: .1em; text-transform: uppercase; }
+.feedback-heading strong { font-size: 14px; }
+.reaction-row { display: flex; gap: 5px; margin: 13px 0 15px; }
+.reaction-button { align-items: center; background: var(--warm-white); border: 1px solid var(--line); display: inline-flex; font-size: 16px; gap: 4px; min-height: 34px; padding: 4px 7px; }
+.reaction-button:hover, .reaction-button.is-reacted { background: var(--green); border-color: var(--ink); }
+.reaction-button small { font-family: var(--font-geist-sans), sans-serif; font-size: 9px; }
+.feedback-notes { display: flex; flex-direction: column; gap: 8px; max-height: 150px; overflow-y: auto; }
+.feedback-note { border-left: 2px solid var(--coral); padding-left: 8px; }
+.feedback-note strong, .feedback-note p { font-family: var(--font-geist-sans), sans-serif; font-size: 10px; margin: 0; }
+.feedback-note p { line-height: 1.35; margin-top: 3px; }
+.note-form { display: flex; gap: 5px; margin-top: 13px; }
+.note-form input { border: 1px solid var(--line); font-family: var(--font-geist-sans), sans-serif; font-size: 11px; min-width: 0; padding: 9px; width: 100%; }
+.note-form button { background: var(--ink); border: 1px solid var(--ink); color: var(--warm-white); font-family: var(--font-geist-sans), sans-serif; font-size: 9px; letter-spacing: .05em; padding: 0 10px; text-transform: uppercase; }
+.note-form button:disabled { cursor: not-allowed; opacity: .45; }
+.board-feedback { left: calc(100% + 12px); pointer-events: auto; position: absolute; top: 8px; z-index: 8; }
+.reaction-bubbles { display: flex; gap: 4px; }
+.reaction-bubble { align-items: center; background: var(--warm-white); border: 1px solid var(--line); border-radius: 999px; box-shadow: 3px 4px 0 rgba(32,32,29,.12); display: inline-flex; font-size: 14px; gap: 3px; padding: 5px 7px; transform: rotate(-3deg); transition: background 140ms, transform 140ms; }
+.reaction-bubble:nth-child(even) { transform: rotate(4deg); }.reaction-bubble:hover, .reaction-bubble.is-mine { background: var(--green); transform: translateY(-3px) rotate(0); }.reaction-bubble small { font-family: var(--font-geist-sans), sans-serif; font-size: 9px; }
+.note-hover-card { background: var(--warm-white); border: 1px solid var(--ink); box-shadow: 5px 6px 0 rgba(32,32,29,.14); display: none; left: 0; margin-top: 8px; min-width: 190px; padding: 10px 12px; }.placed-item:hover .note-hover-card, .note-hover-card:hover { display: block; }
+.note-hover-label { color: rgba(32,32,29,.5); display: block; font-family: var(--font-geist-sans), sans-serif; font-size: 8px; letter-spacing: .1em; margin-bottom: 7px; text-transform: uppercase; }.note-hover-card p { border-top: 1px solid rgba(32,32,29,.12); font-family: var(--font-geist-sans), sans-serif; font-size: 10px; line-height: 1.35; margin: 0; padding: 7px 0 0; }.note-hover-card p + p { margin-top: 7px; }.note-hover-card strong { color: var(--coral); display: block; font-size: 9px; margin-bottom: 2px; }
+@media (max-width: 560px) { .board-feedback { left: auto; right: -4px; top: calc(100% + 8px); }.note-hover-card { left: auto; right: 0; } }
