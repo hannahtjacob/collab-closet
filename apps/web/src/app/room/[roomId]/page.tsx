@@ -88,6 +88,8 @@ export default function RoomPage() {
   const { roomId } = useParams<{ roomId: string }>();
   const searchParams = useSearchParams();
   const boardRef = useRef<HTMLDivElement>(null);
+  const dragOffsetRef = useRef({ x: 0, y: 0 });
+  const dragStartRef = useRef({ x: 0, y: 0, moved: false });
   const roomCode = normalizeRoomCode(roomId);
   const guest = useGuest();
   const guestName = guest?.name || "You";
@@ -99,7 +101,6 @@ export default function RoomPage() {
   const [form, setForm] = useState<ItemForm>(emptyForm);
   const [photoPreview, setPhotoPreview] = useState("");
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
-  const [detailsItemId, setDetailsItemId] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
@@ -156,9 +157,10 @@ export default function RoomPage() {
     setClosets((current) => current.map((closet, index) => index === closetIndex ? { ...closet, items: update(closet.items) } : closet));
   }
 
-  function cycleCloset(direction: number) {
+  function selectCloset(index: number) {
+    if (index === closetIndex) return;
     setActiveId(null);
-    setClosetIndex((current) => (current + direction + closets.length) % closets.length);
+    setClosetIndex(index);
   }
 
   function updateForm(field: keyof ItemForm, value: string) {
@@ -167,7 +169,6 @@ export default function RoomPage() {
 
   function editItem(item: BoardItem) {
     setEditingItemId(item.id);
-    setDetailsItemId(null);
     setPhotoPreview(item.imageUrl.startsWith("data:") ? item.imageUrl : "");
     setForm({
       category: item.category,
@@ -249,6 +250,7 @@ export default function RoomPage() {
 
   function handleBoardDragOver(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
+    if (draggingId) return;
     event.dataTransfer.dropEffect = "copy";
     setIsBoardDropActive(true);
   }
@@ -256,6 +258,7 @@ export default function RoomPage() {
   function handleBoardDrop(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
     setIsBoardDropActive(false);
+    if (draggingId) return;
     const file = event.dataTransfer.files[0];
     if (file) {
       addDroppedPhoto(file, event.clientX, event.clientY);
@@ -326,7 +329,6 @@ export default function RoomPage() {
       } : item));
       setActiveId(editingItemId);
       setEditingItemId(null);
-      setDetailsItemId(null);
       setForm(emptyForm);
       setPhotoPreview("");
       setNotice(`${form.name.trim()} updated.`);
@@ -351,28 +353,50 @@ export default function RoomPage() {
     setNotice(`${newItem.name} added to the board.`);
   }
 
+  function startDrag(event: PointerEvent<HTMLElement>, item: BoardItem) {
+    if (!boardRef.current) return;
+    const bounds = boardRef.current.getBoundingClientRect();
+    const centerX = bounds.left + (item.x / 100) * bounds.width;
+    const centerY = bounds.top + (item.y / 100) * bounds.height;
+    dragOffsetRef.current = { x: event.clientX - centerX, y: event.clientY - centerY };
+    dragStartRef.current = { x: event.clientX, y: event.clientY, moved: false };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setDraggingId(item.id);
+  }
+
   function moveItem(event: PointerEvent<HTMLDivElement>) {
     if (!draggingId || !boardRef.current) return;
+    if (!dragStartRef.current.moved && Math.hypot(event.clientX - dragStartRef.current.x, event.clientY - dragStartRef.current.y) < 4) return;
+    dragStartRef.current.moved = true;
     const bounds = boardRef.current.getBoundingClientRect();
-    const itemWidth = 132;
-    const itemHeight = 190;
-    const x = Math.max(1, Math.min(94, ((event.clientX - bounds.left - itemWidth / 2) / bounds.width) * 100));
-    const y = Math.max(2, Math.min(84, ((event.clientY - bounds.top - itemHeight / 2) / bounds.height) * 100));
+    const card = event.currentTarget.querySelector<HTMLElement>(".placed-item.is-dragging");
+    const halfW = (card?.offsetWidth ?? 132) / 2;
+    const halfH = (card?.offsetHeight ?? 210) / 2;
+    const centerX = Math.max(halfW, Math.min(bounds.width - halfW, event.clientX - bounds.left - dragOffsetRef.current.x));
+    const centerY = Math.max(halfH, Math.min(bounds.height - halfH, event.clientY - bounds.top - dragOffsetRef.current.y));
+    const x = (centerX / bounds.width) * 100;
+    const y = (centerY / bounds.height) * 100;
     updateActiveItems((current) => current.map((item) => item.id === draggingId ? { ...item, x, y } : item));
+  }
+
+  function endDrag() {
+    setDraggingId(null);
+  }
+
+  function finishPointer(item: BoardItem) {
+    const wasClick = draggingId === item.id && !dragStartRef.current.moved;
+    endDrag();
+    if (wasClick) {
+      setActiveId(item.id);
+      editItem(item);
+    }
   }
 
   function removeItem(itemId: string) {
     updateActiveItems((current) => current.filter((item) => item.id !== itemId));
     setActiveId(null);
     setEditingItemId(null);
-    setDetailsItemId(null);
     setNotice("Piece removed from the board.");
-  }
-
-  function showItemDetails(item: BoardItem) {
-    setActiveId(item.id);
-    setDetailsItemId(item.id);
-    setEditingItemId(null);
   }
 
   async function copyToClipboard(kind: "link" | "code") {
@@ -416,51 +440,49 @@ export default function RoomPage() {
         <div className="board-column">
           <div className="board-toolbar">
             <div><span className="live-mark">● LIVE</span><span className="toolbar-muted">Drag pieces to arrange your look</span></div>
-            <div className="closet-switcher" aria-label="Cycle through closets">
-              <button className="arrow-button" onClick={() => cycleCloset(-1)} aria-label="Previous closet">←</button>
-              <span><strong>{closetLabel}</strong><small>{closetIndex + 1} / {closets.length}</small></span>
-              <button className="arrow-button" onClick={() => cycleCloset(1)} aria-label="Next closet">→</button>
-            </div>
-            <span className="board-count">{items.length} pieces / ${total.toFixed(0)} total</span>
+            <span className="board-count">{closetLabel} · {items.length} pieces / ${total.toFixed(0)} total</span>
           </div>
-          <div className={`moodboard ${isBoardDropActive ? "is-drop-active" : ""}`} ref={boardRef} onPointerMove={moveItem} onPointerUp={() => setDraggingId(null)} onPointerLeave={() => { setDraggingId(null); setIsBoardDropActive(false); }} onDragOver={handleBoardDragOver} onDragLeave={() => setIsBoardDropActive(false)} onDrop={handleBoardDrop}>
+          <div className="board-stage">
+          <div className={`moodboard ${isBoardDropActive ? "is-drop-active" : ""}`} ref={boardRef} onPointerMove={moveItem} onPointerUp={endDrag} onPointerCancel={endDrag} onPointerLeave={() => setIsBoardDropActive(false)} onDragOver={handleBoardDragOver} onDragLeave={() => setIsBoardDropActive(false)} onDrop={handleBoardDrop}>
             <div className="moodboard-grid" />
             <div className="moodboard-note">build<br /><em>the look</em></div>
             <div className="drop-hint"><strong>Drop a screenshot here</strong><span>or drag a clothing photo from your desktop</span></div>
             {!items.length && <div className="empty-closet"><strong>{activeCloset?.name} hasn&apos;t added anything yet.</strong><span>Use the form to add the first find to this closet.</span></div>}
-            <div className="board-cursor cursor-ziana"><span />{guestName}</div>
-            <div className="board-cursor cursor-maya"><span />Maya</div>
             {items.map((item) => (
               <article
                 className={`placed-item ${activeId === item.id ? "is-active" : ""} ${draggingId === item.id ? "is-dragging" : ""}`}
                 key={item.id}
                 style={{ left: `${item.x}%`, top: `${item.y}%` }}
-                onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); setActiveId(item.id); setDraggingId(item.id); }}
-                onDoubleClick={() => showItemDetails(item)}
+                onPointerDown={(event) => startDrag(event, item)}
+                onPointerUp={() => finishPointer(item)}
+                onPointerCancel={endDrag}
               >
                 <div className="placed-image-wrap">
-                  {item.imageUrl ? <img src={item.imageUrl} alt={item.name} onError={(event) => { event.currentTarget.style.display = "none"; }} /> : <div className="image-placeholder">{item.category.slice(0, 1).toUpperCase()}</div>}
-                  {activeId === item.id && <button className="remove-item" onPointerDown={(event) => event.stopPropagation()} onClick={() => removeItem(item.id)} aria-label={`Remove ${item.name}`}>×</button>}
+                  {item.imageUrl ? <img src={item.imageUrl} alt={item.name} draggable={false} onError={(event) => { event.currentTarget.style.display = "none"; }} /> : <div className="image-placeholder">{item.category.slice(0, 1).toUpperCase()}</div>}
                 </div>
+                {activeId === item.id && <button className="remove-item" onPointerDown={(event) => event.stopPropagation()} onClick={() => removeItem(item.id)} aria-label={`Remove ${item.name}`}>×</button>}
                 <div className="placed-meta"><strong>{item.name}</strong><span>{item.price} · {item.category}</span></div>
               </article>
             ))}
           </div>
+          <nav className="closet-tabs" aria-label="Closets in this room">
+            {closets.map((closet, index) => (
+              <button
+                key={closet.id}
+                type="button"
+                className={`closet-tab ${index === closetIndex ? "is-active" : ""}`}
+                onClick={() => selectCloset(index)}
+                aria-pressed={index === closetIndex}
+              >
+                <span>{closet.id === "owner" ? "You" : closet.name}</span>
+                <small>{closet.items.length}</small>
+              </button>
+            ))}
+          </nav>
+          </div>
         </div>
 
         <aside className="room-sidebar">
-          {detailsItemId && (() => {
-            const detailsItem = items.find((item) => item.id === detailsItemId);
-            if (!detailsItem) return null;
-            return <div className="item-details-panel">
-              <div className="details-heading"><span>Selected piece</span><button type="button" onClick={() => setDetailsItemId(null)} aria-label="Close item details">×</button></div>
-              <div className="details-photo">{detailsItem.imageUrl ? <img src={detailsItem.imageUrl} alt={detailsItem.name} /> : <div className="image-placeholder">{detailsItem.category.slice(0, 1).toUpperCase()}</div>}</div>
-              <h3>{detailsItem.name}</h3>
-              <p>{detailsItem.price} · {detailsItem.category}</p>
-              {detailsItem.sourceUrl && <a href={detailsItem.sourceUrl} target="_blank" rel="noreferrer">Open product link ↗</a>}
-              <button className="details-edit-button" type="button" onClick={() => editItem(detailsItem)}>Edit details</button>
-            </div>;
-          })()}
           <div className="sidebar-intro"><p className="eyebrow">{closetLabel}</p><h2>Bring in<br /><em>your finds.</em></h2><p>Paste a product link and add it to the closet currently on display.</p></div>
           <form className="add-item-form" onSubmit={addItem}>
             <div className="form-title-row"><label htmlFor="item-name">{editingItemId ? "Edit piece" : "Add a piece"}</label>{editingItemId && <button type="button" className="cancel-edit" onClick={() => { setEditingItemId(null); setForm(emptyForm); setPhotoPreview(""); }}>Cancel</button>}</div>
@@ -473,14 +495,10 @@ export default function RoomPage() {
               {photoPreview ? <img src={photoPreview} alt="Selected clothing preview" /> : <><strong>+ Add a photo</strong><span>Take a picture or choose one from your device</span></>}
             </label>
             <input className="photo-input" id="photo-upload" type="file" accept="image/*" capture="environment" onChange={handlePhoto} />
-            <label htmlFor="image-url">Image link <span>optional fallback</span></label>
-            <input id="image-url" type="url" value={form.imageUrl.startsWith("data:") ? "" : form.imageUrl} onChange={(event) => { setPhotoPreview(""); updateForm("imageUrl", event.target.value); }} placeholder="https://.../image.jpg" />
             <div className="form-split"><div><label htmlFor="category">Category</label><select id="category" value={form.category} onChange={(event) => updateForm("category", event.target.value)}><option>tops</option><option>bottoms</option><option>shoes</option><option>outerwear</option><option>dresses</option><option>accessories</option></select></div><div><label htmlFor="price">Price</label><input id="price" value={form.price} onChange={(event) => updateForm("price", event.target.value)} placeholder="$120" /></div></div>
             <button className="add-button" type="submit"><span aria-hidden="true">{editingItemId ? "✓" : "+"}</span> {editingItemId ? "Save item details" : "Add to moodboard"}</button>
           </form>
           {notice && <p className="room-notice" role="status">{notice}</p>}
-          <div className="sidebar-divider" />
-          <div className="room-tip"><span>TIP</span><p>Click a piece to select it. Drag from the image to make space for someone else&apos;s find.</p></div>
         </aside>
       </section>
     </main>
