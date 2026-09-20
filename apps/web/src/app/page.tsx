@@ -2,8 +2,11 @@
 
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Logo } from "@/components/Logo";
+import { PhoneAuthDialog } from "@/components/PhoneAuth";
 import { ApiError, createRoom, getRoom, normalizeRoomCode } from "@/lib/api";
+import { displayNameFor, useSession } from "@/lib/auth";
 import { saveGuest } from "@/lib/guest";
 
 const boardItems = [
@@ -14,6 +17,8 @@ const boardItems = [
 
 export default function Home() {
   const router = useRouter();
+  const { session } = useSession();
+  const [authOpen, setAuthOpen] = useState(false);
   const [roomName, setRoomName] = useState("");
   const [roomCode, setRoomCode] = useState("");
   const [creatorName, setCreatorName] = useState("");
@@ -33,7 +38,7 @@ export default function Home() {
     setNotice("");
     try {
       const room = await createRoom(trimmedName);
-      saveGuest(creatorName);
+      saveGuest(creatorName || displayNameFor(session));
       router.push(`/room/${room.code}`);
     } catch (error) {
       setNotice(error instanceof ApiError ? error.message : "Couldn't create the room. Try again.");
@@ -53,7 +58,7 @@ export default function Home() {
     setNotice("");
     try {
       const room = await getRoom(code);
-      saveGuest(joinName);
+      saveGuest(joinName || displayNameFor(session));
       router.push(`/room/${room.code}`);
     } catch (error) {
       setNotice(error instanceof ApiError && error.status === 404 ? `No room found for code ${code}. Double-check it with your friend.` : error instanceof ApiError ? error.message : "Couldn't join the room. Try again.");
@@ -72,9 +77,15 @@ export default function Home() {
           <span className="status-dot" />
           Make room for good taste
         </div>
-        <a className="nav-link" href="#join">
-          Join a room <span aria-hidden="true">↗</span>
-        </a>
+        {session ? (
+          <Link className="nav-link" href="/boards">
+            Your boards <span aria-hidden="true">↗</span>
+          </Link>
+        ) : (
+          <button type="button" className="nav-link" onClick={() => setAuthOpen(true)}>
+            Sign in <span aria-hidden="true">↗</span>
+          </button>
+        )}
       </nav>
 
       <section className="hero" id="top">
@@ -140,6 +151,7 @@ export default function Home() {
         <span>Scroll to explore ↓</span>
       </footer>
       <div className="accent-sticker" aria-hidden="true">STYLE<br /><span>in sync</span></div>
+      {authOpen && <PhoneAuthDialog onClose={() => setAuthOpen(false)} onSignedIn={() => router.push("/boards")} />}
       </main>
   );
 }
