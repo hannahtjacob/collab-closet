@@ -2,6 +2,8 @@
 
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
+import { ApiError, createRoom, getRoom, normalizeRoomCode } from "@/lib/api";
+import { saveGuest, useGuest } from "@/lib/guest";
 
 const boardItems = [
   { name: "Soft knit", className: "item-knit", price: "$68" },
@@ -13,10 +15,15 @@ export default function Home() {
   const router = useRouter();
   const [roomName, setRoomName] = useState("");
   const [roomCode, setRoomCode] = useState("");
-  const [displayName, setDisplayName] = useState("");
+  const guest = useGuest();
+  const [typedCreatorName, setCreatorName] = useState<string | null>(null);
+  const [typedJoinName, setJoinName] = useState<string | null>(null);
+  const creatorName = typedCreatorName ?? guest?.name ?? "";
+  const joinName = typedJoinName ?? guest?.name ?? "";
   const [notice, setNotice] = useState("");
+  const [busy, setBusy] = useState<"create" | "join" | null>(null);
 
-  function handleCreate(event: FormEvent<HTMLFormElement>) {
+  async function handleCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmedName = roomName.trim();
     if (!trimmedName) {
@@ -24,25 +31,36 @@ export default function Home() {
       return;
     }
 
-    const roomId = `${trimmedName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "my-room"}-${Math.random().toString(36).slice(2, 7)}`;
-    window.localStorage.setItem(`closet-room:${roomId}`, JSON.stringify({ name: trimmedName }));
-    router.push(`/room/${roomId}`);
+    setBusy("create");
+    setNotice("");
+    try {
+      const room = await createRoom(trimmedName);
+      saveGuest(creatorName);
+      router.push(`/room/${room.code}`);
+    } catch (error) {
+      setNotice(error instanceof ApiError ? error.message : "Couldn't create the room. Try again.");
+      setBusy(null);
+    }
   }
 
-  function handleJoin(event: FormEvent<HTMLFormElement>) {
+  async function handleJoin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const trimmedCode = roomCode.trim();
-    if (!trimmedCode) {
+    const code = normalizeRoomCode(roomCode);
+    if (!code) {
       setNotice("Enter a room code to join your friends.");
       return;
     }
 
-    const roomId = trimmedCode.toLowerCase().replace(/[^a-z0-9-]+/g, "-");
-    const existingRoom = window.localStorage.getItem(`closet-room:${roomId}`);
-    if (!existingRoom) {
-      window.localStorage.setItem(`closet-room:${roomId}`, JSON.stringify({ name: `Room ${trimmedCode.toUpperCase()}` }));
+    setBusy("join");
+    setNotice("");
+    try {
+      const room = await getRoom(code);
+      saveGuest(joinName);
+      router.push(`/room/${room.code}`);
+    } catch (error) {
+      setNotice(error instanceof ApiError && error.status === 404 ? `No room found for code ${code}. Double-check it with your friend.` : error instanceof ApiError ? error.message : "Couldn't join the room. Try again.");
+      setBusy(null);
     }
-    router.push(`/room/${roomId}?guest=${encodeURIComponent(displayName.trim() || "Guest")}`);
   }
 
   return (
@@ -77,7 +95,8 @@ export default function Home() {
               <label htmlFor="room-name">Name your moodboard</label>
               <div className="input-row">
                 <input id="room-name" value={roomName} onChange={(event) => setRoomName(event.target.value)} placeholder="e.g. Weekend in Lisbon" />
-                <button type="submit" className="primary-button" aria-label="Create room">Create <span aria-hidden="true">→</span></button>
+                <input id="creator-name" value={creatorName} onChange={(event) => setCreatorName(event.target.value)} placeholder="Your name" aria-label="Your name" />
+                <button type="submit" className="primary-button" aria-label="Create room" disabled={busy !== null}>{busy === "create" ? "Creating…" : "Create"} <span aria-hidden="true">→</span></button>
               </div>
             </form>
             <form className="action-panel join-panel" onSubmit={handleJoin}>
@@ -87,9 +106,9 @@ export default function Home() {
               </div>
               <label htmlFor="room-code">Have an invite code?</label>
               <div className="join-fields">
-                <input id="room-code" value={roomCode} onChange={(event) => setRoomCode(event.target.value)} placeholder="ROOM CODE" />
-                <input id="display-name" value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Your name" />
-                <button type="submit" className="text-button" aria-label="Join room">Join <span aria-hidden="true">↗</span></button>
+                <input id="room-code" value={roomCode} onChange={(event) => setRoomCode(event.target.value.toUpperCase())} placeholder="ROOM CODE" maxLength={6} autoCapitalize="characters" autoComplete="off" spellCheck={false} />
+                <input id="display-name" value={joinName} onChange={(event) => setJoinName(event.target.value)} placeholder="Your name" />
+                <button type="submit" className="text-button" aria-label="Join room" disabled={busy !== null}>{busy === "join" ? "Joining…" : "Join"} <span aria-hidden="true">↗</span></button>
               </div>
             </form>
           </div>
