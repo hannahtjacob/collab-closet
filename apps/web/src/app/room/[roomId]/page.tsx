@@ -8,7 +8,7 @@ import { Logo } from "@/components/Logo";
 import { ReactionIcon, reactionLabels } from "@/components/ReactionIcon";
 import { ApiError, getRoom, normalizeRoomCode, type RoomSummary } from "@/lib/api";
 import { saveGuest, useGuest } from "@/lib/guest";
-import { useSession } from "@/lib/auth";
+import { signOut, useSession } from "@/lib/auth";
 type BoardItem = {
   id: string;
   productId: string;
@@ -147,7 +147,7 @@ export default function RoomPage() {
   const dragStartRef = useRef({ x: 0, y: 0, moved: false });
   const roomCode = normalizeRoomCode(roomId);
   // Syncs the local identity with the phone account, if the visitor is signed in.
-  useSession();
+  const { session } = useSession();
   const guest = useGuest();
   const guestName = guest?.name || "You";
   const [room, setRoom] = useState<RoomSummary | null>(null);
@@ -860,6 +860,7 @@ if (roomStatus === "not-found") {
           <div className="room-people"><i className="avatar avatar-one">{guestName.slice(0, 1).toUpperCase()}</i><span>1 here</span></div>
           <button className="room-code" onClick={() => copyToClipboard("code")} title="Copy room code" aria-label="Copy room code"><span className="room-kicker">Code</span><strong>{copied === "code" ? "Copied" : room?.code || roomCode}</strong></button>
           <button className="outline-button" onClick={() => copyToClipboard("link")}>{copied === "link" ? "Copied" : "Share room"} <span aria-hidden="true">↗</span></button>
+          {session && <button className="outline-button" onClick={() => void signOut()}>Sign out</button>}
         </div>
       </header>
 

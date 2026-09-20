@@ -6,7 +6,7 @@ import Link from "next/link";
 import { Logo } from "@/components/Logo";
 import { PhoneAuthDialog } from "@/components/PhoneAuth";
 import { ApiError, createRoom, getRoom, normalizeRoomCode } from "@/lib/api";
-import { displayNameFor, useSession } from "@/lib/auth";
+import { displayNameFor, signOut, useSession } from "@/lib/auth";
 import { saveGuest } from "@/lib/guest";
 
 const boardItems = [
@@ -78,9 +78,14 @@ export default function Home() {
           Make room for good taste
         </div>
         {session ? (
-          <Link className="nav-link" href="/boards">
-            Your boards <span aria-hidden="true">↗</span>
-          </Link>
+          <div className="nav-links">
+            <Link className="nav-link" href="/boards">
+              Your boards <span aria-hidden="true">↗</span>
+            </Link>
+            <button type="button" className="nav-link" onClick={() => void signOut()}>
+              Sign out
+            </button>
+          </div>
         ) : (
           <button type="button" className="nav-link" onClick={() => setAuthOpen(true)}>
             Sign in <span aria-hidden="true">↗</span>

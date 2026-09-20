@@ -80,6 +80,7 @@ button, a {
 }
 
 .nav-note { color: rgba(32, 32, 29, 0.58); }
+.nav-links { align-items: center; display: flex; gap: 22px; }
 .status-dot { background: #8bb83a; border-radius: 50%; display: inline-block; height: 6px; margin: 0 7px 1px 0; width: 6px; }
 .nav-link { color: var(--ink); text-decoration: none; }
 .nav-link span { color: var(--coral); font-size: 16px; margin-left: 3px; }

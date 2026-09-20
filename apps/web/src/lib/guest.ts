@@ -43,6 +43,12 @@ export function setIdentity(id: string, name: string): Guest {
   return guest;
 }
 
+/** Drops the pinned identity (on sign out) so the next visit starts as a fresh guest. */
+export function clearGuest() {
+  window.localStorage.removeItem(STORAGE_KEY);
+  window.dispatchEvent(new Event(CHANGE_EVENT));
+}
+
 function subscribe(onChange: () => void) {
   window.addEventListener(CHANGE_EVENT, onChange);
   window.addEventListener("storage", onChange);

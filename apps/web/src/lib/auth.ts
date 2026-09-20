@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
-import { setIdentity } from "@/lib/guest";
+import { clearGuest, setIdentity } from "@/lib/guest";
 
 /** Turns whatever the user typed into E.164, defaulting to +1 for 10-digit US numbers. */
 export function normalizePhone(raw: string): string | null {
@@ -47,6 +47,7 @@ export async function confirmCode(phone: string, token: string, name: string) {
 
 export async function signOut() {
   await supabase.auth.signOut();
+  clearGuest();
 }
 
 /**
