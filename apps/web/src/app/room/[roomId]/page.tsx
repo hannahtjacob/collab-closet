@@ -89,6 +89,7 @@ export default function RoomPage() {
   const searchParams = useSearchParams();
   const boardRef = useRef<HTMLDivElement>(null);
   const dragOffsetRef = useRef({ x: 0, y: 0 });
+  const dragStartRef = useRef({ x: 0, y: 0, moved: false });
   const roomCode = normalizeRoomCode(roomId);
   const guest = useGuest();
   const guestName = guest?.name || "You";
@@ -100,7 +101,6 @@ export default function RoomPage() {
   const [form, setForm] = useState<ItemForm>(emptyForm);
   const [photoPreview, setPhotoPreview] = useState("");
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
-  const [detailsItemId, setDetailsItemId] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
@@ -160,7 +160,6 @@ export default function RoomPage() {
   function selectCloset(index: number) {
     if (index === closetIndex) return;
     setActiveId(null);
-    setDetailsItemId(null);
     setClosetIndex(index);
   }
 
@@ -170,7 +169,6 @@ export default function RoomPage() {
 
   function editItem(item: BoardItem) {
     setEditingItemId(item.id);
-    setDetailsItemId(null);
     setPhotoPreview(item.imageUrl.startsWith("data:") ? item.imageUrl : "");
     setForm({
       category: item.category,
@@ -331,7 +329,6 @@ export default function RoomPage() {
       } : item));
       setActiveId(editingItemId);
       setEditingItemId(null);
-      setDetailsItemId(null);
       setForm(emptyForm);
       setPhotoPreview("");
       setNotice(`${form.name.trim()} updated.`);
@@ -362,13 +359,15 @@ export default function RoomPage() {
     const centerX = bounds.left + (item.x / 100) * bounds.width;
     const centerY = bounds.top + (item.y / 100) * bounds.height;
     dragOffsetRef.current = { x: event.clientX - centerX, y: event.clientY - centerY };
+    dragStartRef.current = { x: event.clientX, y: event.clientY, moved: false };
     event.currentTarget.setPointerCapture(event.pointerId);
-    setActiveId(item.id);
     setDraggingId(item.id);
   }
 
   function moveItem(event: PointerEvent<HTMLDivElement>) {
     if (!draggingId || !boardRef.current) return;
+    if (!dragStartRef.current.moved && Math.hypot(event.clientX - dragStartRef.current.x, event.clientY - dragStartRef.current.y) < 4) return;
+    dragStartRef.current.moved = true;
     const bounds = boardRef.current.getBoundingClientRect();
     const card = event.currentTarget.querySelector<HTMLElement>(".placed-item.is-dragging");
     const halfW = (card?.offsetWidth ?? 132) / 2;
@@ -384,18 +383,20 @@ export default function RoomPage() {
     setDraggingId(null);
   }
 
+  function finishPointer(item: BoardItem) {
+    const wasClick = draggingId === item.id && !dragStartRef.current.moved;
+    endDrag();
+    if (wasClick) {
+      setActiveId(item.id);
+      editItem(item);
+    }
+  }
+
   function removeItem(itemId: string) {
     updateActiveItems((current) => current.filter((item) => item.id !== itemId));
     setActiveId(null);
     setEditingItemId(null);
-    setDetailsItemId(null);
     setNotice("Piece removed from the board.");
-  }
-
-  function showItemDetails(item: BoardItem) {
-    setActiveId(item.id);
-    setDetailsItemId(item.id);
-    setEditingItemId(null);
   }
 
   async function copyToClipboard(kind: "link" | "code") {
@@ -453,9 +454,8 @@ export default function RoomPage() {
                 key={item.id}
                 style={{ left: `${item.x}%`, top: `${item.y}%` }}
                 onPointerDown={(event) => startDrag(event, item)}
-                onPointerUp={endDrag}
+                onPointerUp={() => finishPointer(item)}
                 onPointerCancel={endDrag}
-                onDoubleClick={() => showItemDetails(item)}
               >
                 <div className="placed-image-wrap">
                   {item.imageUrl ? <img src={item.imageUrl} alt={item.name} draggable={false} onError={(event) => { event.currentTarget.style.display = "none"; }} /> : <div className="image-placeholder">{item.category.slice(0, 1).toUpperCase()}</div>}
@@ -483,18 +483,6 @@ export default function RoomPage() {
         </div>
 
         <aside className="room-sidebar">
-          {detailsItemId && (() => {
-            const detailsItem = items.find((item) => item.id === detailsItemId);
-            if (!detailsItem) return null;
-            return <div className="item-details-panel">
-              <div className="details-heading"><span>Selected piece</span><button type="button" onClick={() => setDetailsItemId(null)} aria-label="Close item details">×</button></div>
-              <div className="details-photo">{detailsItem.imageUrl ? <img src={detailsItem.imageUrl} alt={detailsItem.name} /> : <div className="image-placeholder">{detailsItem.category.slice(0, 1).toUpperCase()}</div>}</div>
-              <h3>{detailsItem.name}</h3>
-              <p>{detailsItem.price} · {detailsItem.category}</p>
-              {detailsItem.sourceUrl && <a href={detailsItem.sourceUrl} target="_blank" rel="noreferrer">Open product link ↗</a>}
-              <button className="details-edit-button" type="button" onClick={() => editItem(detailsItem)}>Edit details</button>
-            </div>;
-          })()}
           <div className="sidebar-intro"><p className="eyebrow">{closetLabel}</p><h2>Bring in<br /><em>your finds.</em></h2><p>Paste a product link and add it to the closet currently on display.</p></div>
           <form className="add-item-form" onSubmit={addItem}>
             <div className="form-title-row"><label htmlFor="item-name">{editingItemId ? "Edit piece" : "Add a piece"}</label>{editingItemId && <button type="button" className="cancel-edit" onClick={() => { setEditingItemId(null); setForm(emptyForm); setPhotoPreview(""); }}>Cancel</button>}</div>
