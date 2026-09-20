@@ -3,6 +3,7 @@
 import { ChangeEvent, DragEvent, FormEvent, PointerEvent, startTransition, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
+import { Logo } from "@/components/Logo";
 import { ApiError, getRoom, normalizeRoomCode, type RoomSummary } from "@/lib/api";
 import { saveGuest, useGuest } from "@/lib/guest";
 
@@ -409,7 +410,7 @@ export default function RoomPage() {
     return (
       <main className="room-shell">
         <header className="room-header">
-          <Link className="wordmark" href="/" aria-label="Back to closet home"><span className="wordmark-mark">C</span>closet</Link>
+          <Link className="wordmark" href="/" aria-label="Back to intracloset home"><Logo className="wordmark-mark" />intracloset</Link>
         </header>
         <section className="room-empty">
           <p className="eyebrow">Room not found</p>
@@ -424,7 +425,7 @@ export default function RoomPage() {
   return (
     <main className="room-shell">
       <header className="room-header">
-        <Link className="wordmark" href="/" aria-label="Back to closet home"><span className="wordmark-mark">C</span>closet</Link>
+        <Link className="wordmark" href="/" aria-label="Back to intracloset home"><Logo className="wordmark-mark" />intracloset</Link>
         <div className="room-heading">
           <span className="status-dot" />
           <div><span className="room-kicker">Shared moodboard{roomStatus === "offline" && " · offline"}</span><h1>{roomName}</h1></div>

@@ -2,8 +2,9 @@
 
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Logo } from "@/components/Logo";
 import { ApiError, createRoom, getRoom, normalizeRoomCode } from "@/lib/api";
-import { saveGuest, useGuest } from "@/lib/guest";
+import { saveGuest } from "@/lib/guest";
 
 const boardItems = [
   { name: "Soft knit", className: "item-knit", price: "$68" },
@@ -15,11 +16,8 @@ export default function Home() {
   const router = useRouter();
   const [roomName, setRoomName] = useState("");
   const [roomCode, setRoomCode] = useState("");
-  const guest = useGuest();
-  const [typedCreatorName, setCreatorName] = useState<string | null>(null);
-  const [typedJoinName, setJoinName] = useState<string | null>(null);
-  const creatorName = typedCreatorName ?? guest?.name ?? "";
-  const joinName = typedJoinName ?? guest?.name ?? "";
+  const [creatorName, setCreatorName] = useState("");
+  const [joinName, setJoinName] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState<"create" | "join" | null>(null);
 
@@ -66,9 +64,9 @@ export default function Home() {
   return (
     <main className="site-shell">
       <nav className="topbar" aria-label="Main navigation">
-        <a className="wordmark" href="#top" aria-label="Closet home">
-          <span className="wordmark-mark">C</span>
-          closet
+        <a className="wordmark" href="#top" aria-label="intracloset home">
+          <Logo className="wordmark-mark" />
+          intracloset
         </a>
         <div className="nav-note">
           <span className="status-dot" />
@@ -89,7 +87,6 @@ export default function Home() {
           <div className="room-actions" id="join">
             <form className="action-panel create-panel" onSubmit={handleCreate}>
               <div className="panel-heading">
-                <span className="panel-number">01</span>
                 <span>Create a new room</span>
               </div>
               <label htmlFor="room-name">Name your moodboard</label>
@@ -101,8 +98,7 @@ export default function Home() {
             </form>
             <form className="action-panel join-panel" onSubmit={handleJoin}>
               <div className="panel-heading">
-                <span className="panel-number">02</span>
-                <span>Join someone&apos;s room</span>
+                <span>Join someone else&apos;s room</span>
               </div>
               <label htmlFor="room-code">Have an invite code?</label>
               <div className="join-fields">
