@@ -5,7 +5,11 @@ export type RoomSummary = {
   createdAt: string;
 };
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+function getApiUrl() {
+  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
+  if (typeof window !== "undefined") return `${window.location.protocol}//${window.location.hostname}:4000`;
+  return "http://localhost:4000";
+}
 
 export class ApiError extends Error {
   status: number;
@@ -18,7 +22,7 @@ export class ApiError extends Error {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`${API_URL}${path}`, { ...init, headers: { "Content-Type": "application/json", ...init?.headers } });
+    response = await fetch(`${getApiUrl()}${path}`, { ...init, headers: { "Content-Type": "application/json", ...init?.headers } });
   } catch {
     throw new ApiError(0, "Couldn't reach the room server. Is it running?");
   }
