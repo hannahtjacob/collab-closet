@@ -9,7 +9,7 @@ roomsRouter.post("/", (req, res) => {
     res.status(400).json({ error: "Room name is required." });
     return;
   }
-  res.status(201).json(createRoom(name));
+  res.status(201).json(createRoom(name, []));
 });
 
 roomsRouter.get("/:code", (req, res) => {

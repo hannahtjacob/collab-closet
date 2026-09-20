@@ -6,23 +6,7 @@ import { useParams, useSearchParams } from "next/navigation";
 import { Logo } from "@/components/Logo";
 import { ApiError, getRoom, normalizeRoomCode, type RoomSummary } from "@/lib/api";
 import { saveGuest, useGuest } from "@/lib/guest";
-
-type BoardItem = {
-  id: string;
-  name: string;
-  imageUrl: string;
-  sourceUrl: string;
-  category: string;
-  price: string;
-  x: number;
-  y: number;
-};
-
-type Closet = {
-  id: string;
-  name: string;
-  items: BoardItem[];
-};
+import { connectToRoom, type BoardItem, type Closet, type ClosetSocket, type RoomUser } from "@/lib/realtime";
 
 type ItemForm = typeof emptyForm;
 
@@ -94,6 +78,9 @@ export default function RoomPage() {
   const roomCode = normalizeRoomCode(roomId);
   const guest = useGuest();
   const guestName = guest?.name || "You";
+  const socketRef = useRef<ClosetSocket | null>(null);
+  const closetsRef = useRef<Closet[]>([]);
+  const seededRoomRef = useRef(false);
   const [room, setRoom] = useState<RoomSummary | null>(null);
   const [roomStatus, setRoomStatus] = useState<"loading" | "ready" | "not-found" | "offline">(() => (roomCode ? "loading" : "not-found"));
   const [roomName, setRoomName] = useState("Style room");
@@ -108,9 +95,14 @@ export default function RoomPage() {
   const [copied, setCopied] = useState<"link" | "code" | null>(null);
   const [isParsing, setIsParsing] = useState(false);
   const [isBoardDropActive, setIsBoardDropActive] = useState(false);
+  const [users, setUsers] = useState<RoomUser[]>([]);
   const activeCloset = closets[closetIndex] || closets[0];
   const items = useMemo(() => activeCloset?.items || [], [activeCloset]);
   const closetLabel = activeCloset?.name === "You" ? "Your closet" : `${activeCloset?.name}'s closet`;
+
+  useEffect(() => {
+    closetsRef.current = closets;
+  }, [closets]);
 
   useEffect(() => {
     const fromQuery = searchParams.get("guest");
@@ -154,8 +146,44 @@ export default function RoomPage() {
     window.localStorage.setItem(`closet-room:${roomId}`, JSON.stringify({ name: roomName, closets }));
   }, [closets, roomId, roomName]);
 
+  useEffect(() => {
+    if (!roomCode || roomStatus !== "ready") return;
+    const activeGuest = guest || saveGuest("Guest");
+    const socket = connectToRoom();
+    socketRef.current = socket;
+
+    socket.on("connect", () => {
+      socket.emit("room:join", { roomCode, user: { id: activeGuest.id, name: activeGuest.name } });
+    });
+    socket.on("room:state", (state) => {
+      setRoomName(state.name);
+      setUsers(state.users);
+      if (state.closets.length || seededRoomRef.current) {
+        seededRoomRef.current = true;
+        setClosets(state.closets);
+      } else if (closetsRef.current.length) {
+        seededRoomRef.current = true;
+        socket.emit("room:update", { roomCode, userId: activeGuest.id, state: { closets: closetsRef.current } });
+      }
+    });
+    socket.on("presence:update", setUsers);
+    socket.on("room:error", setNotice);
+
+    return () => {
+      socket.emit("room:leave", { roomCode, userId: activeGuest.id });
+      socket.disconnect();
+      socketRef.current = null;
+    };
+  }, [guest?.id, guest?.name, roomCode, roomStatus]);
+
   function updateActiveItems(update: (current: BoardItem[]) => BoardItem[]) {
-    setClosets((current) => current.map((closet, index) => index === closetIndex ? { ...closet, items: update(closet.items) } : closet));
+    setClosets((current) => {
+      const nextClosets = current.map((closet, index) => index === closetIndex ? { ...closet, items: update(closet.items) } : closet);
+      if (guest?.id) {
+        socketRef.current?.emit("room:update", { roomCode, userId: guest.id, state: { closets: nextClosets } });
+      }
+      return nextClosets;
+    });
   }
 
   function selectCloset(index: number) {
@@ -431,7 +459,10 @@ export default function RoomPage() {
           <div><span className="room-kicker">Shared moodboard{roomStatus === "offline" && " · offline"}</span><h1>{roomName}</h1></div>
         </div>
         <div className="room-actions-bar">
-          <div className="room-people"><i className="avatar avatar-one">{guestName.slice(0, 1).toUpperCase()}</i><i className="avatar avatar-two">M</i><i className="avatar avatar-three">S</i><span>3 online</span></div>
+          <div className="room-people">
+            {(users.length ? users : [{ id: "self", name: guestName, online: true }]).slice(0, 3).map((user, index) => <i className={`avatar avatar-${index === 0 ? "one" : index === 1 ? "two" : "three"}`} key={user.id} title={user.name}>{user.name.slice(0, 1).toUpperCase()}</i>)}
+            <span>{users.filter((user) => user.online).length || 1} online</span>
+          </div>
           <button className="room-code" onClick={() => copyToClipboard("code")} title="Copy room code" aria-label="Copy room code"><span className="room-kicker">Code</span><strong>{copied === "code" ? "Copied" : room?.code || roomCode}</strong></button>
           <button className="outline-button" onClick={() => copyToClipboard("link")}>{copied === "link" ? "Copied" : "Share room"} <span aria-hidden="true">↗</span></button>
         </div>
