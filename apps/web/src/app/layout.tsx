@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "closet — shop together, even when you're apart",
+  title: "intracloset — shop together, even when you're apart",
   description: "A shared space for personal style and collaborative outfit planning.",
 };
 
