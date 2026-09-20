@@ -33,6 +33,16 @@ export function saveGuest(name: string): Guest {
   return guest;
 }
 
+/** Pins the local identity to a known id (used when a phone account signs in). */
+export function setIdentity(id: string, name: string): Guest {
+  const current = loadGuest();
+  const guest: Guest = { id, name: name.trim() || current?.name || "Guest" };
+  if (current?.id === guest.id && current.name === guest.name) return current;
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(guest));
+  window.dispatchEvent(new Event(CHANGE_EVENT));
+  return guest;
+}
+
 function subscribe(onChange: () => void) {
   window.addEventListener(CHANGE_EVENT, onChange);
   window.addEventListener("storage", onChange);

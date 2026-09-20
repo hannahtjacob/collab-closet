@@ -8,6 +8,7 @@ import { Logo } from "@/components/Logo";
 import { ReactionIcon, reactionLabels } from "@/components/ReactionIcon";
 import { ApiError, getRoom, normalizeRoomCode, type RoomSummary } from "@/lib/api";
 import { saveGuest, useGuest } from "@/lib/guest";
+import { useSession } from "@/lib/auth";
 type BoardItem = {
   id: string;
   productId: string;
@@ -145,6 +146,8 @@ export default function RoomPage() {
   const dragOffsetRef = useRef({ x: 0, y: 0 });
   const dragStartRef = useRef({ x: 0, y: 0, moved: false });
   const roomCode = normalizeRoomCode(roomId);
+  // Syncs the local identity with the phone account, if the visitor is signed in.
+  useSession();
   const guest = useGuest();
   const guestName = guest?.name || "You";
   const [room, setRoom] = useState<RoomSummary | null>(null);
