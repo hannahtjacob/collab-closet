@@ -12,6 +12,7 @@ type BoardItem = {
   id: string;
   productId: string;
   addedBy?: string;
+  orientation?: "landscape" | "portrait" | "square";
   name: string;
   imageUrl: string;
   sourceUrl: string;
@@ -35,6 +36,14 @@ type FeedbackItem = {
   user_id?: string;
   reaction: string;
   comment: string;
+};
+
+type AutofillPreview = {
+  imageUrl: string;
+  name: string;
+  price: string;
+  category: string;
+  missing: string[];
 };
 
 const reactionOptions = ["❤️", "🔥", "👏", "👎", "✨"];
@@ -78,6 +87,32 @@ const starterItems: BoardItem[] = [
 ];
 
 const emptyForm = { name: "", imageUrl: "", sourceUrl: "", category: "tops", price: "" };
+
+const categoryKeywords: Record<string, string[]> = {
+  tops: ["tank", "top", "shirt", "t-shirt", "tee", "blouse", "camisole", "bodysuit", "sweater", "hoodie", "crop top", "cardigan"],
+  bottoms: ["jeans", "shorts", "skirt", "pants", "trousers", "leggings", "joggers", "culottes", "denim"],
+  shoes: ["shoe", "shoes", "sneaker", "sneakers", "boot", "boots", "heel", "heels", "sandal", "sandals", "loafer", "flats", "mule"],
+  outerwear: ["jacket", "coat", "blazer", "trench", "parka", "vest", "bomber", "cardigan coat", "outerwear"],
+  dresses: ["dress", "gown", "jumpsuit", "romper", "maxi dress", "mini dress"],
+  accessories: ["bag", "purse", "necklace", "earring", "earrings", "bracelet", "ring", "scarf", "hat", "beanie", "belt", "sunglasses", "jewelry", "accessory"],
+};
+
+function inferCategory(name: string, metadataCategory = "") {
+  const text = `${name} ${metadataCategory}`.toLowerCase();
+  const categoryOrder = ["dresses", "outerwear", "shoes", "bottoms", "accessories", "tops"];
+  return categoryOrder.find((category) => categoryKeywords[category].some((keyword) => text.includes(keyword))) || "";
+}
+
+function getImageOrientation(width: number, height: number): BoardItem["orientation"] {
+  if (width === height) return "square";
+  return width > height ? "landscape" : "portrait";
+}
+
+function detectImageOrientation(imageUrl: string, onDetected: (orientation: BoardItem["orientation"]) => void) {
+  const image = new Image();
+  image.onload = () => onDetected(getImageOrientation(image.naturalWidth, image.naturalHeight));
+  image.src = imageUrl;
+}
 
 function createDefaultClosets(ownerName: string): Closet[] {
   return [
@@ -125,6 +160,7 @@ export default function RoomPage() {
   const [notice, setNotice] = useState("");
   const [copied, setCopied] = useState<"link" | "code" | null>(null);
   const [isParsing, setIsParsing] = useState(false);
+  const [autofillPreview, setAutofillPreview] = useState<AutofillPreview | null>(null);
   const [isBoardDropActive, setIsBoardDropActive] = useState(false);
   const [allFeedback, setAllFeedback] = useState<FeedbackItem[]>([]);
   const [feedbackComment, setFeedbackComment] = useState("");
@@ -383,6 +419,7 @@ export default function RoomPage() {
         id: `${Date.now()}`,
         productId: "",
         addedBy: activeCloset?.id,
+        orientation: "portrait",
         name: file.name.replace(/\.[^/.]+$/, "") || "Screenshot find",
         imageUrl,
         sourceUrl: "",
@@ -394,6 +431,7 @@ export default function RoomPage() {
       updateActiveItems((current) => [...current, newItem]);
       setActiveId(newItem.id);
       editItem(newItem);
+      detectImageOrientation(imageUrl, (orientation) => updateActiveItems((current) => current.map((item) => item.id === newItem.id ? { ...item, orientation } : item)));
       setNotice(`${newItem.name} dropped into ${closetLabel}. Add details in the form if you need them.`);
     };
     reader.readAsDataURL(file);
@@ -408,6 +446,7 @@ export default function RoomPage() {
       id: `${Date.now()}`,
       productId: "",
       addedBy: activeCloset?.id,
+      orientation: "square",
       name: "Dropped clothing find",
       imageUrl,
       sourceUrl: imageUrl,
@@ -418,6 +457,7 @@ export default function RoomPage() {
     };
     updateActiveItems((current) => [...current, newItem]);
     setActiveId(newItem.id);
+    detectImageOrientation(imageUrl, (orientation) => updateActiveItems((current) => current.map((item) => item.id === newItem.id ? { ...item, orientation } : item)));
     setNotice(`Image dropped into ${closetLabel}. Add details in the form if you need them.`);
   }
 
@@ -463,16 +503,25 @@ export default function RoomPage() {
         return;
       }
 
-      const supportedCategories = ["tops", "bottoms", "shoes", "outerwear", "dresses", "accessories"];
-      const parsedCategory = supportedCategories.find((category) => result.product?.category?.includes(category)) || form.category;
+      const parsedName = result.product?.name?.trim() || "";
+      const parsedImageUrl = result.product?.imageUrl?.trim() || "";
+      const parsedPrice = result.product?.price?.trim() || "";
+      const parsedCategory = inferCategory(parsedName, result.product?.category || "");
+      const missing = [
+        !parsedName && "name",
+        !parsedImageUrl && "photo",
+        !parsedPrice && "price",
+        !parsedCategory && "category",
+      ].filter(Boolean) as string[];
       setForm((current) => ({
         ...current,
-        category: parsedCategory,
-        imageUrl: result.product?.imageUrl || current.imageUrl,
-        name: result.product?.name || current.name,
-        price: result.product?.price || current.price,
+        category: parsedCategory || current.category,
+        imageUrl: parsedImageUrl || current.imageUrl,
+        name: parsedName || current.name,
+        price: parsedPrice || current.price,
       }));
-      setNotice("Details found. Check them, then add the piece to the board.");
+      setAutofillPreview({ category: parsedCategory, imageUrl: parsedImageUrl, missing, name: parsedName, price: parsedPrice });
+      setNotice(missing.length ? `Autofill found some details. Fill in: ${missing.join(", ")}.` : "All product details found. Check them, then add the piece to the board.");
     } catch {
       setNotice("This site could not be reached. Enter the product details manually.");
     } finally {
@@ -505,6 +554,7 @@ export default function RoomPage() {
       setForm(emptyForm);
       setPhotoPreview("");
       setNotice(`${form.name.trim()} updated.`);
+      if (form.imageUrl.trim()) detectImageOrientation(form.imageUrl.trim(), (orientation) => updateActiveItems((current) => current.map((item) => item.id === editingItemId ? { ...item, orientation } : item)));
       return;
     }
 
@@ -560,6 +610,7 @@ export default function RoomPage() {
     addedBy: activeCloset.id,
     name: product.name,
     imageUrl: product.image_url || "",
+    orientation: "square",
     sourceUrl: form.sourceUrl.trim(),
     category: product.category || form.category,
     price: product.price ? `$${product.price}` : "Price TBD",
@@ -568,6 +619,7 @@ export default function RoomPage() {
   };
 
   updateActiveItems((current) => [...current, newItem]);
+  if (newItem.imageUrl) detectImageOrientation(newItem.imageUrl, (orientation) => updateActiveItems((current) => current.map((item) => item.id === newItem.id ? { ...item, orientation } : item)));
   setActiveId(newItem.id);
   setEditingItemId(null);
   setForm(emptyForm);
@@ -822,7 +874,7 @@ if (roomStatus === "not-found") {
             {!items.length && <div className="empty-closet"><strong>{activeCloset?.name} hasn&apos;t added anything yet.</strong><span>Use the form to add the first find to this closet.</span></div>}
             {items.map((item) => (
               <article
-                className={`placed-item ${activeId === item.id ? "is-active" : ""} ${draggingId === item.id ? "is-dragging" : ""}`}
+                className={`placed-item ${item.orientation ? `is-${item.orientation}` : ""} ${activeId === item.id ? "is-active" : ""} ${draggingId === item.id ? "is-dragging" : ""}`}
                 key={item.id}
                 style={{ left: `${item.x}%`, top: `${item.y}%` }}
                 onPointerDown={(event) => startDrag(event, item)}
@@ -830,7 +882,7 @@ if (roomStatus === "not-found") {
                 onPointerCancel={endDrag}
               >
                 <div className="placed-image-wrap">
-                  {item.imageUrl ? <img src={item.imageUrl} alt={item.name} draggable={false} onError={(event) => { event.currentTarget.style.display = "none"; }} /> : <div className="image-placeholder">{item.category.slice(0, 1).toUpperCase()}</div>}
+                  {item.imageUrl ? <img src={item.imageUrl} alt={item.name} draggable={false} onLoad={(event) => { const image = event.currentTarget; const orientation = getImageOrientation(image.naturalWidth, image.naturalHeight); if (orientation !== item.orientation) updateActiveItems((current) => current.map((currentItem) => currentItem.id === item.id ? { ...currentItem, orientation } : currentItem)); }} onError={(event) => { event.currentTarget.style.display = "none"; }} /> : <div className="image-placeholder">{item.category.slice(0, 1).toUpperCase()}</div>}
                 </div>
                 {activeId === item.id && <button className="remove-item" onPointerDown={(event) => event.stopPropagation()} onClick={() => removeItem(item.id)} aria-label={`Remove ${item.name}`}>×</button>}
                 <div className="placed-meta"><strong>{item.name}</strong><span>{item.price} · {item.category}</span></div>
@@ -864,6 +916,18 @@ if (roomStatus === "not-found") {
         </div>
 
         <aside className="room-sidebar">
+          {autofillPreview && <section className="autofill-preview" aria-label="Autofilled product preview">
+            <div className="autofill-preview-heading"><span>Autofill preview</span><button type="button" onClick={() => setAutofillPreview(null)} aria-label="Close autofill preview">×</button></div>
+            <div className="autofill-preview-body">
+              <div className="autofill-preview-image">{autofillPreview.imageUrl ? <img src={autofillPreview.imageUrl} alt={autofillPreview.name || "Autofilled product"} /> : <div className="image-placeholder">?</div>}</div>
+              <div className="autofill-preview-info">
+                <strong>{autofillPreview.name || "Name not found"}</strong>
+                <span>{autofillPreview.price || "Price not found"}</span>
+                <span>{autofillPreview.category || "Category not found"}</span>
+              </div>
+            </div>
+            {autofillPreview.missing.length > 0 && <p className="autofill-missing"><strong>Still needed:</strong> {autofillPreview.missing.join(", ")}. Complete these fields before adding.</p>}
+          </section>}
           {activeItem && <section className="feedback-panel" aria-label={`Feedback for ${activeItem.name}`}>
             <div className="feedback-heading"><span>Leave feedback</span><strong>{activeItem.name}</strong></div>
             <div className="reaction-row" aria-label="React to this piece">
