@@ -1,3 +1,5 @@
+import { supabase } from "@/lib/supabase";
+
 export type RoomSummary = {
   id: string;
   code: string;
@@ -35,10 +37,51 @@ export function normalizeRoomCode(raw: string) {
   return raw.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
-export function createRoom(name: string) {
-  return request<RoomSummary>("/rooms", { method: "POST", body: JSON.stringify({ name }) });
+export async function createRoom(name: string): Promise<RoomSummary> {
+  const code = Math.random().toString(36).slice(2, 8).toUpperCase();
+
+  const { data, error } = await supabase
+    .from("rooms")
+    .insert({
+      name: name.trim() || "Style room",
+      code,
+    })
+    .select("id, code, name, created_at")
+    .single();
+
+  if (error) {
+    throw new ApiError(0, error.message);
+  }
+
+  return {
+    id: data.id,
+    code: data.code,
+    name: data.name,
+    createdAt: data.created_at,
+  };
 }
 
-export function getRoom(code: string) {
-  return request<RoomSummary>(`/rooms/${encodeURIComponent(normalizeRoomCode(code))}`);
+export async function getRoom(code: string): Promise<RoomSummary> {
+  const normalizedCode = normalizeRoomCode(code);
+
+  const { data, error } = await supabase
+    .from("rooms")
+    .select("id, code, name, created_at")
+    .eq("code", normalizedCode)
+    .single();
+
+  if (error) {
+    if (error.code === "PGRST116") {
+      throw new ApiError(404, "Room not found.");
+    }
+
+    throw new ApiError(0, error.message);
+  }
+
+  return {
+    id: data.id,
+    code: data.code,
+    name: data.name,
+    createdAt: data.created_at,
+  };
 }

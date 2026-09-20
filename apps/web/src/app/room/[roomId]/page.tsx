@@ -1,6 +1,7 @@
 "use client";
-
-import { ChangeEvent, DragEvent, FormEvent, PointerEvent, startTransition, useEffect, useMemo, useRef, useState } from "react";
+import { supabase } from "@/lib/supabase";
+  import type { PointerEvent } from "react";
+import { ChangeEvent, DragEvent, FormEvent, startTransition, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { Logo } from "@/components/Logo";
@@ -134,6 +135,65 @@ export default function RoomPage() {
       cancelled = true;
     };
   }, [roomCode]);
+
+  useEffect(() => {
+    if (!room?.id) return;
+    const roomId = room.id;
+    let cancelled = false;
+
+    async function loadRoomProducts() {
+      const { data: placements, error: placementsError } = await supabase
+        .from("room_products")
+        .select("product_id, x, y")
+        .eq("room_id", roomId);
+
+      if (placementsError) {
+        setNotice(`Couldn't load room products: ${placementsError.message}`);
+        return;
+      }
+      if (!placements?.length) return;
+
+      const productIds = placements.map((placement) => placement.product_id);
+      const { data: products, error: productsError } = await supabase
+        .from("products")
+        .select("id, name, image_url, category, price")
+        .in("id", productIds);
+
+      if (productsError) {
+        setNotice(`Couldn't load products: ${productsError.message}`);
+        return;
+      }
+      if (cancelled || !products) return;
+
+      const productsById = new Map(products.map((product) => [product.id, product]));
+      const loadedItems: BoardItem[] = placements.flatMap((placement) => {
+        const product = productsById.get(placement.product_id);
+        if (!product) return [];
+        return [{
+          id: product.id,
+          name: product.name,
+          imageUrl: product.image_url || "",
+          sourceUrl: "",
+          category: product.category || "tops",
+          price: product.price !== null && product.price !== undefined ? `$${product.price}` : "Price TBD",
+          x: Number(placement.x) || 0,
+          y: Number(placement.y) || 0,
+        }];
+      });
+
+      setClosets((current) => current.map((closet, index) => {
+        if (index !== 0) return closet;
+        const fetchedIds = new Set(loadedItems.map((item) => item.id));
+        const localOnlyItems = closet.items.filter((item) => !fetchedIds.has(item.id));
+        return { ...closet, items: [...localOnlyItems, ...loadedItems] };
+      }));
+    }
+
+    void loadRoomProducts();
+    return () => {
+      cancelled = true;
+    };
+  }, [room?.id]);
 
   const total = useMemo(() => {
     return items.reduce((sum, item) => sum + (Number(item.price.replace(/[^0-9.]/g, "")) || 0), 0);
@@ -307,7 +367,7 @@ export default function RoomPage() {
     }
   }
 
-  function addItem(event: FormEvent<HTMLFormElement>) {
+  async function addItem(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!form.name.trim()) {
       setNotice("Add a name so everyone knows what the piece is.");
@@ -335,77 +395,173 @@ export default function RoomPage() {
       return;
     }
 
-    const newItem: BoardItem = {
-      id: `${Date.now()}`,
+  const x = 10 + ((items.length * 17) % 70);
+  const y = 12 + ((items.length * 23) % 58);
+
+  if (!room) {
+    setNotice("Room is still loading.");
+    return;
+  }
+
+  // 1. Save product to Supabase products table
+  const { data: product, error: productError } = await supabase
+    .from("products")
+    .insert({
       name: form.name.trim(),
-      imageUrl: form.imageUrl.trim(),
-      sourceUrl: form.sourceUrl.trim(),
+      image_url: form.imageUrl.trim(),
       category: form.category,
-      price: form.price.trim() || "Price TBD",
-      x: 10 + ((items.length * 17) % 70),
-      y: 12 + ((items.length * 23) % 58),
-    };
-    updateActiveItems((current) => [...current, newItem]);
-    setActiveId(newItem.id);
-    setEditingItemId(null);
-    setForm(emptyForm);
-    setPhotoPreview("");
-    setNotice(`${newItem.name} added to the board.`);
+      price: Number(form.price.replace(/[^0-9.]/g, "")) || null,
+    })
+    .select("id, name, image_url, category, price")
+    .single();
+
+  if (productError || !product) {
+    console.error("Products insert error:", productError);
+    setNotice(productError?.message || "Couldn't save the product.");
+    return;
   }
 
-  function startDrag(event: PointerEvent<HTMLElement>, item: BoardItem) {
-    if (!boardRef.current) return;
-    const bounds = boardRef.current.getBoundingClientRect();
-    const centerX = bounds.left + (item.x / 100) * bounds.width;
-    const centerY = bounds.top + (item.y / 100) * bounds.height;
-    dragOffsetRef.current = { x: event.clientX - centerX, y: event.clientY - centerY };
-    dragStartRef.current = { x: event.clientX, y: event.clientY, moved: false };
-    event.currentTarget.setPointerCapture(event.pointerId);
-    setDraggingId(item.id);
+  // 2. Link product to current room in room_products
+  const { error: roomProductError } = await supabase
+    .from("room_products")
+    .insert({
+      room_id: room.id,
+      product_id: product.id,
+      x,
+      y,
+    });
+
+  if (roomProductError) {
+    console.error("room_products insert error:", roomProductError);
+    setNotice(roomProductError.message);
+    return;
   }
 
-  function moveItem(event: PointerEvent<HTMLDivElement>) {
-    if (!draggingId || !boardRef.current) return;
-    if (!dragStartRef.current.moved && Math.hypot(event.clientX - dragStartRef.current.x, event.clientY - dragStartRef.current.y) < 4) return;
-    dragStartRef.current.moved = true;
-    const bounds = boardRef.current.getBoundingClientRect();
-    const card = event.currentTarget.querySelector<HTMLElement>(".placed-item.is-dragging");
-    const halfW = (card?.offsetWidth ?? 132) / 2;
-    const halfH = (card?.offsetHeight ?? 210) / 2;
-    const centerX = Math.max(halfW, Math.min(bounds.width - halfW, event.clientX - bounds.left - dragOffsetRef.current.x));
-    const centerY = Math.max(halfH, Math.min(bounds.height - halfH, event.clientY - bounds.top - dragOffsetRef.current.y));
-    const x = (centerX / bounds.width) * 100;
-    const y = (centerY / bounds.height) * 100;
-    updateActiveItems((current) => current.map((item) => item.id === draggingId ? { ...item, x, y } : item));
+  // 3. Update local state with saved product data
+  const newItem: BoardItem = {
+    id: product.id,
+    name: product.name,
+    imageUrl: product.image_url || "",
+    sourceUrl: form.sourceUrl.trim(),
+    category: product.category || form.category,
+    price: product.price ? `$${product.price}` : "Price TBD",
+    x,
+    y,
+  };
+
+  updateActiveItems((current) => [...current, newItem]);
+  setActiveId(newItem.id);
+  setEditingItemId(null);
+  setForm(emptyForm);
+  setPhotoPreview("");
+  setNotice(`${newItem.name} added to the board.`);
   }
 
-  function endDrag() {
-    setDraggingId(null);
+
+function startDrag(event: PointerEvent<HTMLElement>, item: BoardItem) {
+  if (!boardRef.current) return;
+  const bounds = boardRef.current.getBoundingClientRect();
+  const centerX = bounds.left + (item.x / 100) * bounds.width;
+  const centerY = bounds.top + (item.y / 100) * bounds.height;
+  dragOffsetRef.current = { x: event.clientX - centerX, y: event.clientY - centerY };
+  dragStartRef.current = { x: event.clientX, y: event.clientY, moved: false };
+  event.currentTarget.setPointerCapture(event.pointerId);
+  setDraggingId(item.id);
+}
+
+function moveItem(event: PointerEvent<HTMLDivElement>) {
+  if (!draggingId || !boardRef.current) return;
+  if (
+    !dragStartRef.current.moved &&
+    Math.hypot(
+      event.clientX - dragStartRef.current.x,
+      event.clientY - dragStartRef.current.y
+    ) < 4
+  )
+    return;
+
+  dragStartRef.current.moved = true;
+  const bounds = boardRef.current.getBoundingClientRect();
+  const card = event.currentTarget.querySelector<HTMLElement>(
+    ".placed-item.is-dragging"
+  );
+  const halfW = (card?.offsetWidth ?? 132) / 2;
+  const halfH = (card?.offsetHeight ?? 210) / 2;
+  const centerX = Math.max(
+    halfW,
+    Math.min(bounds.width - halfW, event.clientX - bounds.left - dragOffsetRef.current.x)
+  );
+  const centerY = Math.max(
+    halfH,
+    Math.min(bounds.height - halfH, event.clientY - bounds.top - dragOffsetRef.current.y)
+  );
+  const x = (centerX / bounds.width) * 100;
+  const y = (centerY / bounds.height) * 100;
+
+  updateActiveItems((current) =>
+    current.map((item) => (item.id === draggingId ? { ...item, x, y } : item))
+  );
+}
+
+function endDrag() {
+  setDraggingId(null);
+}
+
+async function finishPointer(item: BoardItem) {
+  const wasClick = draggingId === item.id && !dragStartRef.current.moved;
+  const wasMoved = dragStartRef.current.moved;
+
+  endDrag();
+
+  if (wasClick) {
+    setActiveId(item.id);
+    editItem(item);
+    return;
   }
 
-  function finishPointer(item: BoardItem) {
-    const wasClick = draggingId === item.id && !dragStartRef.current.moved;
-    endDrag();
-    if (wasClick) {
-      setActiveId(item.id);
-      editItem(item);
+  // If dragged, save final position to room_products in Supabase
+  if (wasMoved && room?.id) {
+    const { error } = await supabase
+      .from("room_products")
+      .update({ x: item.x, y: item.y })
+      .eq("room_id", room.id)
+      .eq("product_id", item.id);
+
+    if (error) {
+      console.error("Failed to update item coordinates:", error.message);
+    }
+  }
+}
+
+async function removeItem(itemId: string) {
+  updateActiveItems((current) => current.filter((item) => item.id !== itemId));
+  setActiveId(null);
+  setEditingItemId(null);
+
+  if (room?.id) {
+    const { error } = await supabase
+      .from("room_products")
+      .delete()
+      .eq("room_id", room.id)
+      .eq("product_id", itemId);
+
+    if (error) {
+      console.error("Failed to delete item from room:", error.message);
     }
   }
 
-  function removeItem(itemId: string) {
-    updateActiveItems((current) => current.filter((item) => item.id !== itemId));
-    setActiveId(null);
-    setEditingItemId(null);
-    setNotice("Piece removed from the board.");
-  }
+  setNotice("Piece removed from the board.");
+}
 
-  async function copyToClipboard(kind: "link" | "code") {
-    await navigator.clipboard.writeText(kind === "link" ? `${window.location.origin}/room/${roomCode}` : roomCode);
-    setCopied(kind);
-    setTimeout(() => setCopied(null), 1800);
-  }
+async function copyToClipboard(kind: "link" | "code") {
+  await navigator.clipboard.writeText(
+    kind === "link" ? `${window.location.origin}/room/${roomCode}` : roomCode
+  );
+  setCopied(kind);
+  setTimeout(() => setCopied(null), 1800);
+}
 
-  if (roomStatus === "not-found") {
+if (roomStatus === "not-found") {
     return (
       <main className="room-shell">
         <header className="room-header">
