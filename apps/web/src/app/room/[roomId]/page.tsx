@@ -9,6 +9,8 @@ import { ApiError, getRoom, normalizeRoomCode, type RoomSummary } from "@/lib/ap
 import { saveGuest, useGuest } from "@/lib/guest";
 type BoardItem = {
   id: string;
+  productId: string;
+  addedBy?: string;
   name: string;
   imageUrl: string;
   sourceUrl: string;
@@ -20,6 +22,7 @@ type BoardItem = {
 
 type Closet = {
   id: string;
+  memberId?: string;
   name: string;
   items: BoardItem[];
 };
@@ -39,6 +42,7 @@ type ItemForm = typeof emptyForm;
 const starterItems: BoardItem[] = [
   {
     id: "starter-knit",
+    productId: "starter-knit-product",
     name: "Coral knit",
     imageUrl: "https://images.unsplash.com/photo-1576566588028-4147f3842f27?auto=format&fit=crop&w=500&q=85",
     sourceUrl: "https://www.example.com/",
@@ -49,6 +53,7 @@ const starterItems: BoardItem[] = [
   },
   {
     id: "starter-pants",
+    productId: "starter-pants-product",
     name: "Wide leg trousers",
     imageUrl: "https://images.unsplash.com/photo-1594633312681-425c7b97ccd1?auto=format&fit=crop&w=500&q=85",
     sourceUrl: "https://www.example.com/",
@@ -59,6 +64,7 @@ const starterItems: BoardItem[] = [
   },
   {
     id: "starter-bag",
+    productId: "starter-bag-product",
     name: "Crescent bag",
     imageUrl: "https://images.unsplash.com/photo-1584917865442-de89df76afd3?auto=format&fit=crop&w=500&q=85",
     sourceUrl: "https://www.example.com/",
@@ -152,73 +158,114 @@ export default function RoomPage() {
   }, [roomCode]);
 
   useEffect(() => {
-    if (!room?.id || !activeCloset?.id) return;
+    if (!room?.id || !guest?.id) return;
+    let cancelled = false;
     const roomId = room.id;
-    const memberId = activeCloset.id;
+    const userId = guest.id;
+
+    async function loadMembers() {
+      const { data: members, error } = await supabase
+        .from("room_members")
+        .select("id, room_id, user_id, joined_id")
+        .eq("room_id", roomId)
+        .order("joined_id", { ascending: true });
+      if (cancelled) return;
+      if (error) {
+        setNotice(`Couldn't load room members: ${error.message}`);
+        return;
+      }
+
+      let rows = members || [];
+      let current = rows.find((member) => member.user_id === userId);
+      if (!current) {
+        const { data: joined, error: joinError } = await supabase
+          .from("room_members")
+          .insert({ room_id: roomId, user_id: userId })
+          .select("id, room_id, user_id, joined_id")
+          .single();
+        if (joinError || !joined) {
+          setNotice(`Couldn't join this room: ${joinError?.message || "member record was not created"}`);
+          return;
+        }
+        current = joined;
+        rows = [...rows, joined];
+      }
+
+      setClosets(rows.map((member, index) => ({
+        id: member.user_id,
+        memberId: member.id,
+        name: member.user_id === userId ? guestName : `Member ${index + 1}`,
+        items: [],
+      })));
+      const currentIndex = rows.findIndex((member) => member.id === current?.id);
+      setClosetIndex(Math.max(0, currentIndex));
+    }
+
+    void loadMembers();
+    return () => { cancelled = true; };
+  }, [guest?.id, guestName, room?.id]);
+
+  useEffect(() => {
+    if (!room?.id || !closets.length) return;
+    const roomId = room.id;
     let cancelled = false;
 
+    async function hydratePlacement(placement: { id: string; product_id: string; added_by: string; x: number; y: number }) {
+      const { data: product, error } = await supabase.from("products").select("id, name, image_url, category, price").eq("id", placement.product_id).single();
+      if (cancelled || error || !product) return;
+      const item: BoardItem = {
+        id: placement.id,
+        productId: product.id,
+        addedBy: placement.added_by,
+        name: product.name,
+        imageUrl: product.image_url || "",
+        sourceUrl: "",
+        category: product.category || "tops",
+        price: product.price !== null && product.price !== undefined ? `$${product.price}` : "Price TBD",
+        x: Number(placement.x) || 0,
+        y: Number(placement.y) || 0,
+      };
+      setClosets((current) => current.map((closet) => closet.id === placement.added_by ? { ...closet, items: [...closet.items.filter((existing) => existing.id !== item.id), item] } : closet));
+    }
+
+    const channel = supabase
+      .channel(`room-products:${roomId}`)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "room_products", filter: `room_id=eq.${roomId}` }, (payload) => void hydratePlacement(payload.new as never))
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "room_products", filter: `room_id=eq.${roomId}` }, (payload) => void hydratePlacement(payload.new as never))
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "room_products", filter: `room_id=eq.${roomId}` }, (payload) => {
+        const deletedId = String((payload.old as { id: string }).id);
+        setClosets((current) => current.map((closet) => ({ ...closet, items: closet.items.filter((item) => item.id !== deletedId) })));
+      })
+      .subscribe();
+
     async function loadRoomProducts() {
-      const { data: placements, error: placementsError } = await supabase
-        .from("room_products")
-        .select("product_id, x, y")
-        .eq("room_id", roomId)
-        .eq("member_id", memberId);
-
-      if (placementsError) {
-        setNotice(`Couldn't load room products: ${placementsError.message}`);
+      const { data: placements, error } = await supabase.from("room_products").select("id, product_id, added_by, x, y").eq("room_id", roomId);
+      if (cancelled) return;
+      if (error) {
+        setNotice(`Couldn't load room products: ${error.message}`);
         return;
       }
-      if (!placements?.length) return;
-
-      const productIds = placements.map((placement) => placement.product_id);
-      const { data: products, error: productsError } = await supabase
-        .from("products")
-        .select("id, name, image_url, category, price")
-        .in("id", productIds);
-
-      if (productsError) {
-        setNotice(`Couldn't load products: ${productsError.message}`);
-        return;
-      }
-      if (cancelled || !products) return;
-
-      const productsById = new Map(products.map((product) => [product.id, product]));
-      const loadedItems: BoardItem[] = placements.flatMap((placement) => {
-        const product = productsById.get(placement.product_id);
-        if (!product) return [];
-        return [{
-          id: product.id,
-          name: product.name,
-          imageUrl: product.image_url || "",
-          sourceUrl: "",
-          category: product.category || "tops",
-          price: product.price !== null && product.price !== undefined ? `$${product.price}` : "Price TBD",
-          x: Number(placement.x) || 0,
-          y: Number(placement.y) || 0,
-        }];
-      });
-
-      setClosets((current) => current.map((closet) => {
-        if (closet.id !== memberId) return closet;
-        const fetchedIds = new Set(loadedItems.map((item) => item.id));
-        const localOnlyItems = closet.items.filter((item) => !fetchedIds.has(item.id));
-        return { ...closet, items: [...localOnlyItems, ...loadedItems] };
-      }));
+      setClosets((current) => current.map((closet) => ({ ...closet, items: [] })));
+      await Promise.all((placements || []).map((placement) => hydratePlacement(placement)));
     }
 
     void loadRoomProducts();
-    return () => {
-      cancelled = true;
-    };
-  }, [activeCloset?.id, room?.id]);
+    return () => { cancelled = true; void supabase.removeChannel(channel); };
+  }, [closets.length, room?.id]);
 
   useEffect(() => {
     if (!room?.id) return;
     const roomId = room.id;
     const channel = supabase
       .channel(`room-feedback:${roomId}`)
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "item_feedback", filter: `room_id=eq.${roomId}` }, (payload) => {
-        const feedback = payload.new as FeedbackItem;
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "room_product_reactions", filter: `room_id=eq.${roomId}` }, (payload) => {
+        const row = payload.new as { id: string; room_id: string; product_id: string; emoji: string };
+        const feedback: FeedbackItem = { id: row.id, room_id: row.room_id, product_id: row.product_id, reaction: row.emoji, comment: "" };
+        setAllFeedback((current) => current.some((item) => item.id === feedback.id) ? current : [...current, feedback]);
+      })
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "room_product_notes", filter: `room_id=eq.${roomId}` }, (payload) => {
+        const row = payload.new as { id: string; room_id: string; product_id: string; body: string };
+        const feedback: FeedbackItem = { id: row.id, room_id: row.room_id, product_id: row.product_id, reaction: "", comment: row.body };
         setAllFeedback((current) => current.some((item) => item.id === feedback.id) ? current : [...current, feedback]);
       })
       .subscribe();
@@ -234,14 +281,16 @@ export default function RoomPage() {
     let cancelled = false;
 
     async function loadFeedback() {
-      const { data, error } = await supabase
-        .from("item_feedback")
-        .select("id, room_id, product_id, reaction, comment, created_at")
-        .eq("room_id", roomId)
-        .order("created_at", { ascending: true });
+      const [{ data: reactions, error: reactionsError }, { data: notes, error: notesError }] = await Promise.all([
+        supabase.from("room_product_reactions").select("id, room_id, product_id, emoji, created_at").eq("room_id", roomId).order("created_at", { ascending: true }),
+        supabase.from("room_product_notes").select("id, room_id, product_id, body, created_at").eq("room_id", roomId).order("created_at", { ascending: true }),
+      ]);
       if (cancelled) return;
-      if (error) setNotice(`Couldn't load feedback: ${error.message}`);
-      else setAllFeedback((data || []) as FeedbackItem[]);
+      if (reactionsError || notesError) setNotice(`Couldn't load feedback: ${reactionsError?.message || notesError?.message}`);
+      else setAllFeedback([
+        ...(reactions || []).map((row) => ({ id: row.id, room_id: row.room_id, product_id: row.product_id, reaction: row.emoji, comment: "" })),
+        ...(notes || []).map((row) => ({ id: row.id, room_id: row.room_id, product_id: row.product_id, reaction: "", comment: row.body })),
+      ]);
     }
 
     void loadFeedback();
@@ -327,6 +376,8 @@ export default function RoomPage() {
       const y = bounds && clientY ? Math.max(18, Math.min(82, ((clientY - bounds.top) / bounds.height) * 100)) : 45;
       const newItem: BoardItem = {
         id: `${Date.now()}`,
+        productId: "",
+        addedBy: activeCloset?.id,
         name: file.name.replace(/\.[^/.]+$/, "") || "Screenshot find",
         imageUrl,
         sourceUrl: "",
@@ -350,6 +401,8 @@ export default function RoomPage() {
     const y = bounds && clientY ? Math.max(18, Math.min(82, ((clientY - bounds.top) / bounds.height) * 100)) : 45;
     const newItem: BoardItem = {
       id: `${Date.now()}`,
+      productId: "",
+      addedBy: activeCloset?.id,
       name: "Dropped clothing find",
       imageUrl,
       sourceUrl: imageUrl,
@@ -477,25 +530,29 @@ export default function RoomPage() {
   }
 
   // 2. Link product to current room in room_products
-  const { error: roomProductError } = await supabase
+  const { data: placement, error: roomProductError } = await supabase
     .from("room_products")
     .insert({
       room_id: room.id,
       product_id: product.id,
-      member_id: activeCloset.id,
+      added_by: activeCloset.id,
       x,
       y,
-    });
+    })
+    .select("id")
+    .single();
 
-  if (roomProductError) {
+  if (roomProductError || !placement) {
     console.error("room_products insert error:", roomProductError);
-    setNotice(roomProductError.message);
+    setNotice(roomProductError?.message || "Couldn't save the board placement.");
     return;
   }
 
   // 3. Update local state with saved product data
   const newItem: BoardItem = {
-    id: product.id,
+    id: placement.id,
+    productId: product.id,
+    addedBy: activeCloset.id,
     name: product.name,
     imageUrl: product.image_url || "",
     sourceUrl: form.sourceUrl.trim(),
@@ -581,8 +638,7 @@ async function finishPointer(item: BoardItem) {
       .from("room_products")
       .update({ x: item.x, y: item.y })
       .eq("room_id", room.id)
-      .eq("member_id", activeCloset.id)
-      .eq("product_id", item.id);
+      .eq("id", item.id);
 
     if (error) {
       console.error("Failed to update item coordinates:", error.message);
@@ -600,8 +656,7 @@ async function removeItem(itemId: string) {
       .from("room_products")
       .delete()
       .eq("room_id", room.id)
-      .eq("member_id", activeCloset.id)
-      .eq("product_id", itemId);
+      .eq("id", itemId);
 
     if (error) {
       console.error("Failed to delete item from room:", error.message);
@@ -611,7 +666,7 @@ async function removeItem(itemId: string) {
   setNotice("Piece removed from the board.");
 }
 
-  async function postFeedback(productId: string, reaction = feedbackReaction, comment = feedbackComment.trim()) {
+  async function postFeedback(placementId: string, reaction = feedbackReaction, comment = feedbackComment.trim()) {
     if (!room?.id || isSavingFeedback) return;
     if (!comment && !reaction) {
       setNotice("Add a comment or choose a reaction first.");
@@ -619,11 +674,12 @@ async function removeItem(itemId: string) {
     }
 
     setIsSavingFeedback(true);
-    let persistedProductId = productId;
-    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(productId);
+    let persistedPlacementId = placementId;
+    let persistedProductId = items.find((item) => item.id === placementId)?.productId || placementId;
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(placementId);
 
     if (!isUuid) {
-      const localItem = items.find((item) => item.id === productId);
+      const localItem = items.find((item) => item.id === placementId);
       if (!localItem) {
         setIsSavingFeedback(false);
         setNotice("Select a saved board item before posting feedback.");
@@ -647,33 +703,40 @@ async function removeItem(itemId: string) {
         return;
       }
 
-      const { error: placementError } = await supabase
+      const { data: placement, error: placementError } = await supabase
         .from("room_products")
-        .insert({ room_id: room.id, product_id: product.id, member_id: activeCloset.id, x: localItem.x, y: localItem.y });
+        .insert({ room_id: room.id, product_id: product.id, added_by: activeCloset.id, x: localItem.x, y: localItem.y })
+        .select("id")
+        .single();
 
-      if (placementError) {
+      if (placementError || !placement) {
         setIsSavingFeedback(false);
         setNotice(`Couldn't save the board placement: ${placementError.message}`);
         return;
       }
 
       persistedProductId = product.id;
-      updateActiveItems((current) => current.map((item) => item.id === productId ? { ...item, id: persistedProductId } : item));
-      setActiveId(persistedProductId);
+      persistedPlacementId = placement.id;
+      updateActiveItems((current) => current.map((item) => item.id === placementId ? { ...item, id: persistedPlacementId, productId: persistedProductId } : item));
+      setActiveId(persistedPlacementId);
     }
 
-    const { data, error } = await supabase
-      .from("item_feedback")
-      .insert({ room_id: room.id, product_id: persistedProductId, reaction, comment })
-      .select("id, room_id, product_id, reaction, comment")
-      .single();
+    const [reactionResult, noteResult] = await Promise.all([
+      reaction ? supabase.from("room_product_reactions").insert({ room_id: room.id, product_id: persistedProductId, user_id: guest?.id || "guest", user_name: guestName, emoji: reaction }).select("id, room_id, product_id, emoji").single() : Promise.resolve({ data: null, error: null }),
+      comment ? supabase.from("room_product_notes").insert({ room_id: room.id, product_id: persistedProductId, user_id: guest?.id || "guest", user_name: guestName, body: comment }).select("id, room_id, product_id, body").single() : Promise.resolve({ data: null, error: null }),
+    ]);
+    const error = reactionResult.error || noteResult.error;
     setIsSavingFeedback(false);
-    if (error || !data) {
+    if (error) {
       console.error("Error posting feedback:", error?.message);
       setNotice(`Couldn't save feedback: ${error?.message || "Unknown error"}`);
       return;
     }
-    setAllFeedback((current) => current.some((item) => item.id === data.id) ? current : [...current, data as FeedbackItem]);
+    const newFeedback = [
+      reactionResult.data && { id: reactionResult.data.id, room_id: reactionResult.data.room_id, product_id: reactionResult.data.product_id, reaction: reactionResult.data.emoji, comment: "" },
+      noteResult.data && { id: noteResult.data.id, room_id: noteResult.data.room_id, product_id: noteResult.data.product_id, reaction: "", comment: noteResult.data.body },
+    ].filter(Boolean) as FeedbackItem[];
+    setAllFeedback((current) => [...current, ...newFeedback.filter((item) => !current.some((existing) => existing.id === item.id))]);
     setFeedbackComment("");
     setNotice("Feedback posted!");
   }
@@ -748,13 +811,13 @@ if (roomStatus === "not-found") {
                 </div>
                 {activeId === item.id && <button className="remove-item" onPointerDown={(event) => event.stopPropagation()} onClick={() => removeItem(item.id)} aria-label={`Remove ${item.name}`}>×</button>}
                 <div className="placed-meta"><strong>{item.name}</strong><span>{item.price} · {item.category}</span></div>
-                {allFeedback.some((feedback) => feedback.product_id === item.id && feedback.reaction) && <div className="board-feedback" onPointerDown={(event) => event.stopPropagation()} onPointerUp={(event) => event.stopPropagation()}>
+                {allFeedback.some((feedback) => feedback.product_id === item.productId && feedback.reaction) && <div className="board-feedback" onPointerDown={(event) => event.stopPropagation()} onPointerUp={(event) => event.stopPropagation()}>
                   <div className="reaction-bubbles" aria-label="Reactions">
-                    {allFeedback.filter((feedback) => feedback.product_id === item.id && feedback.reaction).slice(-3).map((feedback) => <button className="reaction-bubble" key={feedback.id} type="button" onClick={() => void postFeedback(item.id, feedback.reaction, "")} aria-label={feedback.reaction} title={feedback.comment || undefined}>{feedback.reaction}</button>)}
+                    {allFeedback.filter((feedback) => feedback.product_id === item.productId && feedback.reaction).slice(-3).map((feedback) => <button className="reaction-bubble" key={feedback.id} type="button" onClick={() => void postFeedback(item.id, feedback.reaction, "")} aria-label={feedback.reaction} title={feedback.comment || undefined}>{feedback.reaction}</button>)}
                   </div>
-                  {allFeedback.some((feedback) => feedback.product_id === item.id && feedback.comment) && <div className="note-hover-card" role="tooltip">
+                  {allFeedback.some((feedback) => feedback.product_id === item.productId && feedback.comment) && <div className="note-hover-card" role="tooltip">
                     <span className="note-hover-label">Notes from the room</span>
-                    {allFeedback.filter((feedback) => feedback.product_id === item.id && feedback.comment).map((feedback) => <p key={feedback.id}>{feedback.comment}</p>)}
+                    {allFeedback.filter((feedback) => feedback.product_id === item.productId && feedback.comment).map((feedback) => <p key={feedback.id}>{feedback.comment}</p>)}
                   </div>}
                 </div>}
               </article>
@@ -782,12 +845,12 @@ if (roomStatus === "not-found") {
             <div className="feedback-heading"><span>Leave feedback</span><strong>{activeItem.name}</strong></div>
             <div className="reaction-row" aria-label="React to this piece">
               {reactionOptions.map((emoji) => {
-                const count = allFeedback.filter((feedback) => feedback.product_id === activeItem.id && feedback.reaction === emoji).length;
+                const count = allFeedback.filter((feedback) => feedback.product_id === activeItem.productId && feedback.reaction === emoji).length;
                 return <button className={`reaction-button ${feedbackReaction === emoji ? "is-reacted" : ""}`} key={emoji} type="button" onClick={() => { setFeedbackReaction(emoji); void postFeedback(activeItem.id, emoji, ""); }} aria-label={`${emoji} reaction${count ? `, ${count}` : ""}`} title={count ? `${count} reaction${count === 1 ? "" : "s"}` : "React"}>{emoji}{count > 0 && <small>{count}</small>}</button>;
               })}
             </div>
             <div className="feedback-notes">
-              {allFeedback.filter((feedback) => feedback.product_id === activeItem.id && feedback.comment).map((feedback) => <article className="feedback-note" key={feedback.id}><p>{feedback.comment}</p></article>)}
+              {allFeedback.filter((feedback) => feedback.product_id === activeItem.productId && feedback.comment).map((feedback) => <article className="feedback-note" key={feedback.id}><p>{feedback.comment}</p></article>)}
             </div>
             <form className="note-form" onSubmit={submitFeedback}>
               <input value={feedbackComment} onChange={(event) => setFeedbackComment(event.target.value)} maxLength={280} placeholder="Say what you think..." aria-label="Write feedback" />
